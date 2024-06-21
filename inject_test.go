@@ -52,7 +52,7 @@ func TestProvide(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, injector.providers, 2)
 
-		_, err = injector.invoke(func(s string) {})
+		_, err = injector.Invoke(func(s string) {})
 		require.NoError(t, err)
 		require.Len(t, injector.providers, 1)
 
@@ -68,25 +68,19 @@ func TestInvoke(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Panics(t, func() {
-		injector.invoke("testNotFunc")
+		injector.Invoke("testNotFunc")
 	})
 
-	results, err := injector.invoke(func(s string) string { return s })
+	results, err := injector.Invoke(func(s string) string { return s })
 	require.NoError(t, err)
-	require.Equal(t, "test", results[0].Interface())
+	require.Len(t, results, 1)
+	require.Equal(t, "test", results[0])
 
 	{
 		errTemp := errors.New("temp")
-		results, err := injector.invoke(func(s string) (string, error) { return "", errTemp })
+		results, err := injector.Invoke(func(s string) (string, error) { return "", errTemp })
 		require.ErrorIs(t, err, errTemp)
-		require.Equal(t, "", results[0].Interface())
-		require.Len(t, results, 1)
-	}
-
-	{
-		results, err := injector.Invoke(func(s string) string { return s })
-		require.NoError(t, err)
-		require.Equal(t, "test", results[0])
+		require.Len(t, results, 0)
 	}
 }
 
@@ -164,16 +158,16 @@ func TestMultipleProviders(t *testing.T) {
 	require.NoError(t, err)
 	err = injector.Provide(func() string { return "test2" })
 	require.ErrorIs(t, err, ErrTypeAlreadyProvided)
-	results, err := injector.invoke(func(s1, s2 string) string { return s1 + s2 })
+	results, err := injector.Invoke(func(s1, s2 string) string { return s1 + s2 })
 	require.NoError(t, err)
-	require.Equal(t, "test1test1", results[0].Interface())
+	require.Equal(t, "test1test1", results[0])
 }
 
 func TestUnresolvedDependency(t *testing.T) {
 	injector := New()
 	err := injector.Provide(func() string { return "test" })
 	require.NoError(t, err)
-	_, err = injector.invoke(func(s string, i int) string { return s })
+	_, err = injector.Invoke(func(s string, i int) string { return s })
 	require.ErrorIs(t, err, ErrTypeNotProvided)
 }
 
@@ -184,16 +178,16 @@ func TestParentInjection(t *testing.T) {
 	child := New()
 	err = child.SetParent(parent)
 	require.NoError(t, err)
-	results, err := child.invoke(func(s string) string { return s })
+	results, err := child.Invoke(func(s string) string { return s })
 	require.NoError(t, err)
-	require.Equal(t, "test", results[0].Interface())
+	require.Equal(t, "test", results[0])
 
 	// override
 	err = child.Provide(func() string { return "test2" })
 	require.NoError(t, err)
-	results, err = child.invoke(func(s string) string { return s })
+	results, err = child.Invoke(func(s string) string { return s })
 	require.NoError(t, err)
-	require.Equal(t, "test2", results[0].Interface())
+	require.Equal(t, "test2", results[0])
 }
 
 type TestInterface interface {
