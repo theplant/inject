@@ -55,11 +55,13 @@ func (inj *Injector) SetParent(parent *Injector) error {
 
 var typeError = reflect.TypeOf((*error)(nil)).Elem()
 
+const invalidProvider = "Provide only accepts a function that returns at least one type except error"
+
 func (inj *Injector) provide(f any) (err error) {
 	rv := reflect.ValueOf(f)
 	rt := rv.Type()
 	if rt.Kind() != reflect.Func {
-		panic("Provide only accepts a function")
+		panic(invalidProvider)
 	}
 
 	inj.mu.Lock()
@@ -76,7 +78,7 @@ func (inj *Injector) provide(f any) (err error) {
 
 	numOut := rt.NumOut()
 	if numOut == 0 {
-		return nil
+		panic(invalidProvider)
 	}
 
 	provider := &provider{
@@ -102,9 +104,11 @@ func (inj *Injector) provide(f any) (err error) {
 		inj.providers[outType] = provider
 		setted = append(setted, outType)
 	}
-	if len(setted) > 0 {
-		inj.maxProviderSeq++
+	if len(setted) == 0 {
+		panic(invalidProvider)
 	}
+	inj.maxProviderSeq++
+
 	return nil
 }
 

@@ -33,6 +33,18 @@ func TestProvide(t *testing.T) {
 	}
 	{
 		injector := New()
+		require.Panics(t, func() {
+			injector.Provide(func() {})
+		})
+	}
+	{
+		injector := New()
+		require.Panics(t, func() {
+			injector.Provide(func() error { return nil })
+		})
+	}
+	{
+		injector := New()
 		err := injector.Provide(func() string { return "test" })
 		require.NoError(t, err)
 	}
