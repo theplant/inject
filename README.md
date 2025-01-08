@@ -48,6 +48,7 @@ type Document struct {
 	Size        int64               `inject:"optional"` // Exported optional field
 	page        int                 `inject:""`         // Unexported non-optional field
 	name        string              `inject:"optional"` // Unexported optional field
+	ReadCount   int32               `inject:""`         // Unexported non-optional field
 }
 
 func ExampleInjector() {
@@ -64,8 +65,8 @@ func ExampleInjector() {
 		func() DocumentDescription {
 			return "A document description"
 		},
-		func() int {
-			return 42
+		func() (int, int32) {
+			return 42, 32
 		},
 	); err != nil {
 		panic(err)
@@ -87,6 +88,7 @@ func ExampleInjector() {
 		fmt.Printf("Document size: %d\n", doc.Size)
 		fmt.Printf("Document page: %d\n", doc.page)
 		fmt.Printf("Document name: %q\n", doc.name)
+		fmt.Printf("Document read count: %d\n", doc.ReadCount)
 	}
 
 	fmt.Println("-------")
@@ -148,6 +150,7 @@ func ExampleInjector() {
 	// Document size: 100
 	// Document page: 42
 	// Document name: "A simple string"
+	// Document read count: 32
 	// -------
 	// Document id: ""
 	// Document description: "A document description"
@@ -155,6 +158,7 @@ func ExampleInjector() {
 	// Document size: 0
 	// Document page: 42
 	// Document name: "A simple string"
+	// Document read count: 32
 	// -------
 	// Document id: ""
 	// Document description: "A document description"
@@ -162,6 +166,7 @@ func ExampleInjector() {
 	// Document size: 0
 	// Document page: 42
 	// Document name: "A simple string"
+	// Document read count: 32
 }
 
 ```

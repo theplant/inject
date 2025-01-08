@@ -3,7 +3,6 @@ module github.com/theplant/inject
 go 1.22.3
 
 require (
-	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.9.0
 	golang.org/x/sync v0.7.0
 )

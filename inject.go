@@ -1,13 +1,13 @@
 package inject
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"sync"
 	"unsafe"
 
-	"github.com/pkg/errors"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -17,28 +17,35 @@ var (
 	ErrParentAlreadySet    = errors.New("parent already set")
 )
 
+type provider struct {
+	seq uint64
+	fn  any // value func
+}
+
 type Injector struct {
 	mu sync.RWMutex
 
 	values    map[reflect.Type]reflect.Value
-	providers map[reflect.Type]any // value func
+	providers map[reflect.Type]*provider
 	parent    *Injector
 
-	sfg singleflight.Group
+	maxProviderSeq uint64
+	sfg            singleflight.Group
 }
 
 func New() *Injector {
 	inj := &Injector{
-		values:    map[reflect.Type]reflect.Value{},
-		providers: map[reflect.Type]any{},
+		values:         map[reflect.Type]reflect.Value{},
+		providers:      map[reflect.Type]*provider{},
+		maxProviderSeq: 0,
 	}
 	inj.Provide(func() *Injector { return inj })
 	return inj
 }
 
 func (inj *Injector) SetParent(parent *Injector) error {
-	inj.mu.RLock()
-	defer inj.mu.RUnlock()
+	inj.mu.Lock()
+	defer inj.mu.Unlock()
 	if inj.parent != nil {
 		return ErrParentAlreadySet
 	}
@@ -68,6 +75,14 @@ func (inj *Injector) provide(f any) (err error) {
 	}()
 
 	numOut := rt.NumOut()
+	if numOut == 0 {
+		return nil
+	}
+
+	provider := &provider{
+		seq: inj.maxProviderSeq + 1,
+		fn:  f,
+	}
 	for i := 0; i < numOut; i++ {
 		outType := rt.Out(i)
 
@@ -77,15 +92,18 @@ func (inj *Injector) provide(f any) (err error) {
 		}
 
 		if _, ok := inj.values[outType]; ok {
-			return errors.Wrap(ErrTypeAlreadyProvided, outType.String())
+			return fmt.Errorf("%w: %s", ErrTypeAlreadyProvided, outType.String())
 		}
 
 		if _, ok := inj.providers[outType]; ok {
-			return errors.Wrap(ErrTypeAlreadyProvided, outType.String())
+			return fmt.Errorf("%w: %s", ErrTypeAlreadyProvided, outType.String())
 		}
 
-		inj.providers[outType] = f
+		inj.providers[outType] = provider
 		setted = append(setted, outType)
+	}
+	if len(setted) > 0 {
+		inj.maxProviderSeq++
 	}
 	return nil
 }
@@ -144,7 +162,7 @@ func (inj *Injector) resolve(rt reflect.Type) (reflect.Value, error) {
 
 	if ok {
 		// ensure that the provider is only executed once same time
-		_, err, _ := inj.sfg.Do(fmt.Sprintf("%p", provider), func() (any, error) {
+		_, err, _ := inj.sfg.Do(fmt.Sprintf("%d", provider.seq), func() (any, error) {
 			// must recheck the provider, because it may be deleted by prev inj.sfg.Do
 			inj.mu.RLock()
 			_, ok := inj.providers[rt]
@@ -153,7 +171,7 @@ func (inj *Injector) resolve(rt reflect.Type) (reflect.Value, error) {
 				return nil, nil
 			}
 
-			results, err := inj.invoke(provider)
+			results, err := inj.invoke(provider.fn)
 			if err != nil {
 				return nil, err
 			}
@@ -178,7 +196,7 @@ func (inj *Injector) resolve(rt reflect.Type) (reflect.Value, error) {
 		return parent.resolve(rt)
 	}
 
-	return rv, errors.Wrap(ErrTypeNotProvided, rt.String())
+	return rv, fmt.Errorf("%w: %s", ErrTypeNotProvided, rt.String())
 }
 
 func unwrapPtr(rv reflect.Value) reflect.Value {
