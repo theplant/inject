@@ -1,8 +1,10 @@
 package inject
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -132,6 +134,21 @@ func TestResolve(t *testing.T) {
 		require.ErrorIs(t, err, errTemp)
 		require.Equal(t, "xxx", str)
 	}
+
+	{
+		err := injector.Provide(func() int { return 1 })
+		require.NoError(t, err)
+		err = injector.Provide(func() int32 { return 2 })
+		require.NoError(t, err)
+		var a int
+		var b int
+		var c int32
+		err = injector.Resolve(&a, &b, &c)
+		require.NoError(t, err)
+		require.Equal(t, 1, a)
+		require.Equal(t, 1, b)
+		require.Equal(t, int32(2), c)
+	}
 }
 
 func TestApply(t *testing.T) {
@@ -225,6 +242,38 @@ func TestInterfaceType(t *testing.T) {
 	require.NotNil(t, testIface)
 	require.Equal(t, "hello", testIface.Test())
 
+	{
+		type TestInterfaceDummy TestInterface
+		var testIfaceDummy TestInterfaceDummy
+		err = injector.Resolve(&testIfaceDummy)
+		require.ErrorIs(t, err, ErrTypeNotProvided)
+		require.Nil(t, testIfaceDummy)
+
+		err = injector.Provide(func() TestInterfaceDummy { return &TestStruct{Name: "hello"} })
+		require.NoError(t, err)
+
+		err = injector.Resolve(&testIfaceDummy)
+		require.NotNil(t, testIfaceDummy)
+		require.Equal(t, "hello", testIfaceDummy.Test())
+	}
+
+	{
+		type TestInterfaceDummy interface {
+			TestInterface
+		}
+		var testIfaceDummy TestInterfaceDummy
+		err = injector.Resolve(&testIfaceDummy)
+		require.ErrorIs(t, err, ErrTypeNotProvided)
+		require.Nil(t, testIfaceDummy)
+
+		err = injector.Provide(func() TestInterfaceDummy { return &TestStruct{Name: "hello"} })
+		require.NoError(t, err)
+
+		err = injector.Resolve(&testIfaceDummy)
+		require.NotNil(t, testIfaceDummy)
+		require.Equal(t, "hello", testIfaceDummy.Test())
+	}
+
 	type Visibility string
 	err = injector.Provide(func() Visibility { return "public" })
 	require.NoError(t, err)
@@ -286,5 +335,303 @@ func TestAutoApply(t *testing.T) {
 		require.Equal(t, "test", testStruct.value)
 		require.Equal(t, "testID2", testStruct.ID)
 		require.Equal(t, injector, testStruct.Injector)
+	}
+}
+
+func TestResolveWithContext(t *testing.T) {
+	// Test basic functionality and context-aware constructors
+	{
+		injector := New()
+		type contextKey string
+		const key contextKey = "testKey"
+
+		err := injector.Provide(func(ctx Context) string {
+			require.NotNil(t, ctx)
+			if val := ctx.Value(key); val != nil {
+				return val.(string)
+			}
+			return "default"
+		})
+		require.NoError(t, err)
+
+		// Test with custom context value
+		ctx := context.WithValue(context.Background(), key, "custom-value")
+		var str string
+		err = injector.ResolveWithContext(ctx, &str)
+		require.NoError(t, err)
+		require.Equal(t, "custom-value", str)
+	}
+
+	// Test with background context using new injector
+	{
+		injector := New()
+		err := injector.Provide(func(ctx Context) string {
+			require.NotNil(t, ctx)
+			return "context-aware"
+		})
+		require.NoError(t, err)
+
+		var str string
+		err = injector.ResolveWithContext(context.Background(), &str)
+		require.NoError(t, err)
+		require.Equal(t, "context-aware", str)
+	}
+
+	// Test context timeout and error handling
+	{
+		injector := New()
+		testErr := errors.New("test error")
+
+		err := injector.Provide(func(ctx Context) (string, error) {
+			select {
+			case <-time.After(100 * time.Millisecond):
+				return "completed", nil
+			case <-ctx.Done():
+				return "", testErr
+			}
+		})
+		require.NoError(t, err)
+
+		// Test with timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		var str string
+		err = injector.ResolveWithContext(ctx, &str)
+		require.ErrorIs(t, err, testErr)
+	}
+
+	// Test multiple values and nested dependencies
+	{
+		injector := New()
+		err := injector.Provide(func(ctx Context) string {
+			return "dependency"
+		})
+		require.NoError(t, err)
+		err = injector.Provide(func(ctx Context, dep string) int {
+			require.Equal(t, "dependency", dep)
+			return 42
+		})
+		require.NoError(t, err)
+
+		var num int
+		var str string
+		err = injector.ResolveWithContext(context.Background(), &num, &str)
+		require.NoError(t, err)
+		require.Equal(t, 42, num)
+		require.Equal(t, "dependency", str)
+	}
+
+	// Test compatibility and parent injector
+	{
+		parent := New()
+		err := parent.Provide(func() string { return "from-parent" })
+		require.NoError(t, err)
+
+		child := New()
+		err = child.SetParent(parent)
+		require.NoError(t, err)
+
+		var str1, str2 string
+		// Test compatibility with regular Resolve
+		err = child.Resolve(&str1)
+		require.NoError(t, err)
+		// Test ResolveWithContext
+		err = child.ResolveWithContext(context.Background(), &str2)
+		require.NoError(t, err)
+		require.Equal(t, "from-parent", str1)
+		require.Equal(t, "from-parent", str2)
+	}
+
+	// Test InjectContext passed to function requiring context.Context
+	{
+		injector := New()
+		type contextKey string
+		const key contextKey = "passedKey"
+
+		// Helper function that takes regular context.Context
+		processWithContext := func(ctx context.Context) string {
+			if val := ctx.Value(key); val != nil {
+				return val.(string)
+			}
+			return "no-value"
+		}
+
+		err := injector.Provide(func(ctx Context) string {
+			// Pass InjectContext to function expecting context.Context
+			return processWithContext(ctx)
+		})
+		require.NoError(t, err)
+
+		ctx := context.WithValue(context.Background(), key, "passed-through")
+		var str string
+		err = injector.ResolveWithContext(ctx, &str)
+		require.NoError(t, err)
+		require.Equal(t, "passed-through", str)
+	}
+
+	// Test what happens if InjectContext is also provided
+	{
+		injector := New()
+
+		// Provide a InjectContext (this should be ignored)
+		err := injector.Provide(func() Context {
+			return context.WithValue(context.Background(), "provided", "ignored")
+		})
+		require.ErrorIs(t, err, ErrContextNotAllowed)
+
+		err = injector.Provide(func(ctx Context) string {
+			// Should get the actual inject context, not the provided one
+			if val := ctx.Value("actual"); val != nil {
+				return val.(string)
+			}
+			return "no-actual-value"
+		})
+		require.NoError(t, err)
+
+		actualCtx := context.WithValue(context.Background(), "actual", "from-resolve")
+		var str string
+		err = injector.ResolveWithContext(actualCtx, &str)
+		require.NoError(t, err)
+		require.Equal(t, "from-resolve", str)
+	}
+}
+
+func TestApplyWithContext(t *testing.T) {
+	type TestStruct struct {
+		Value string `inject:""`
+		Num   int    `inject:""`
+	}
+
+	// Test with context values
+	{
+		injector := New()
+		type contextKey string
+		const key contextKey = "applyKey"
+
+		err := injector.Provide(func(ctx Context) string {
+			if val := ctx.Value(key); val != nil {
+				return val.(string)
+			}
+			return "default-value"
+		})
+		require.NoError(t, err)
+		err = injector.Provide(func(ctx Context) int {
+			if val := ctx.Value("numKey"); val != nil {
+				return val.(int)
+			}
+			return 0
+		})
+		require.NoError(t, err)
+
+		ctx := context.WithValue(context.Background(), key, "context-value")
+		ctx = context.WithValue(ctx, "numKey", 42)
+
+		testStruct := &TestStruct{}
+		err = injector.ApplyWithContext(ctx, testStruct)
+		require.NoError(t, err)
+		require.Equal(t, "context-value", testStruct.Value)
+		require.Equal(t, 42, testStruct.Num)
+	}
+
+	// Test compatibility with regular Apply method using separate injector
+	{
+		injector := New()
+		type contextKey string
+		const key contextKey = "applyKey"
+
+		err := injector.Provide(func(ctx Context) string {
+			if val := ctx.Value(key); val != nil {
+				return val.(string)
+			}
+			return "default-value"
+		})
+		require.NoError(t, err)
+		err = injector.Provide(func(ctx Context) int {
+			if val := ctx.Value("numKey"); val != nil {
+				return val.(int)
+			}
+			return 0
+		})
+		require.NoError(t, err)
+
+		testStruct := &TestStruct{}
+		err = injector.Apply(testStruct)
+		require.NoError(t, err)
+		require.Equal(t, "default-value", testStruct.Value)
+		require.Equal(t, 0, testStruct.Num)
+	}
+}
+
+func TestInvokeWithContext(t *testing.T) {
+	// Test with context values
+	{
+		injector := New()
+		type contextKey string
+		const key contextKey = "invokeKey"
+
+		err := injector.Provide(func(ctx Context) string {
+			if val := ctx.Value(key); val != nil {
+				return val.(string)
+			}
+			return "default-invoke"
+		})
+		require.NoError(t, err)
+
+		ctx := context.WithValue(context.Background(), key, "invoke-value")
+		results, err := injector.InvokeWithContext(ctx, func(s string) (string, int) {
+			return s + "-processed", len(s)
+		})
+		require.NoError(t, err)
+		require.Len(t, results, 2)
+		require.Equal(t, "invoke-value-processed", results[0])
+		require.Equal(t, 12, results[1])
+	}
+
+	// Test compatibility with regular Invoke method using separate injector
+	{
+		injector := New()
+		type contextKey string
+		const key contextKey = "invokeKey"
+
+		err := injector.Provide(func(ctx Context) string {
+			if val := ctx.Value(key); val != nil {
+				return val.(string)
+			}
+			return "default-invoke"
+		})
+		require.NoError(t, err)
+
+		results, err := injector.Invoke(func(s string) string {
+			return s + "-regular"
+		})
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+		require.Equal(t, "default-invoke-regular", results[0])
+	}
+
+	// Test context passed to function parameter
+	{
+		injector := New()
+		type contextKey string
+		const key contextKey = "invokeKey"
+
+		err := injector.Provide(func(ctx Context) string {
+			if val := ctx.Value(key); val != nil {
+				return val.(string)
+			}
+			return "default-invoke"
+		})
+		require.NoError(t, err)
+
+		ctx := context.WithValue(context.Background(), key, "invoke-value")
+		results, err := injector.InvokeWithContext(ctx, func(s string, ctx Context) string {
+			if val := ctx.Value(key); val != nil {
+				return s + "-" + val.(string)
+			}
+			return s + "-no-context"
+		})
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+		require.Equal(t, "invoke-value-invoke-value", results[0])
 	}
 }

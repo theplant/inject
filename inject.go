@@ -1,6 +1,7 @@
 package inject
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -15,6 +16,7 @@ var (
 	ErrTypeNotProvided     = errors.New("type not provided")
 	ErrTypeAlreadyProvided = errors.New("type already provided")
 	ErrParentAlreadySet    = errors.New("parent already set")
+	ErrContextNotAllowed   = errors.New("inject.Context not allowed")
 )
 
 type provider struct {
@@ -93,6 +95,10 @@ func (inj *Injector) provide(f any) (err error) {
 			continue
 		}
 
+		if outType == typeContext {
+			return fmt.Errorf("%w: %s", ErrContextNotAllowed, outType.String())
+		}
+
 		if _, ok := inj.values[outType]; ok {
 			return fmt.Errorf("%w: %s", ErrTypeAlreadyProvided, outType.String())
 		}
@@ -112,7 +118,11 @@ func (inj *Injector) provide(f any) (err error) {
 	return nil
 }
 
-func (inj *Injector) invoke(f any) ([]reflect.Value, error) {
+type Context context.Context
+
+var typeContext = reflect.TypeOf((*Context)(nil)).Elem()
+
+func (inj *Injector) invoke(ctx context.Context, f any) ([]reflect.Value, error) {
 	rt := reflect.TypeOf(f)
 	if rt.Kind() != reflect.Func {
 		panic("Invoke only accepts a function")
@@ -122,7 +132,11 @@ func (inj *Injector) invoke(f any) ([]reflect.Value, error) {
 	in := make([]reflect.Value, numIn)
 	for i := 0; i < numIn; i++ {
 		argType := rt.In(i)
-		argValue, err := inj.resolve(argType)
+		if argType == typeContext {
+			in[i] = reflect.ValueOf(Context(ctx))
+			continue
+		}
+		argValue, err := inj.resolve(ctx, argType)
 		if err != nil {
 			return nil, err
 		}
@@ -135,7 +149,7 @@ func (inj *Injector) invoke(f any) ([]reflect.Value, error) {
 	for _, out := range outs {
 		unwrapped := unwrapPtr(out)
 		if unwrapped.Kind() == reflect.Struct {
-			if err := inj.applyStruct(unwrapped); err != nil {
+			if err := inj.applyStruct(ctx, unwrapped); err != nil {
 				return nil, err
 			}
 		}
@@ -153,7 +167,7 @@ func (inj *Injector) invoke(f any) ([]reflect.Value, error) {
 	return outs, nil
 }
 
-func (inj *Injector) resolve(rt reflect.Type) (reflect.Value, error) {
+func (inj *Injector) resolve(ctx context.Context, rt reflect.Type) (reflect.Value, error) {
 	inj.mu.RLock()
 	rv := inj.values[rt]
 	if rv.IsValid() {
@@ -175,7 +189,7 @@ func (inj *Injector) resolve(rt reflect.Type) (reflect.Value, error) {
 				return nil, nil
 			}
 
-			results, err := inj.invoke(provider.fn)
+			results, err := inj.invoke(ctx, provider.fn)
 			if err != nil {
 				return nil, err
 			}
@@ -193,11 +207,11 @@ func (inj *Injector) resolve(rt reflect.Type) (reflect.Value, error) {
 		if err != nil {
 			return rv, err
 		}
-		return inj.resolve(rt)
+		return inj.resolve(ctx, rt)
 	}
 
 	if parent != nil {
-		return parent.resolve(rt)
+		return parent.resolve(ctx, rt)
 	}
 
 	return rv, fmt.Errorf("%w: %s", ErrTypeNotProvided, rt.String())
@@ -211,16 +225,20 @@ func unwrapPtr(rv reflect.Value) reflect.Value {
 }
 
 func (inj *Injector) Apply(val any) error {
+	return inj.ApplyWithContext(context.Background(), val)
+}
+
+func (inj *Injector) ApplyWithContext(ctx Context, val any) error {
 	rv := unwrapPtr(reflect.ValueOf(val))
 	if rv.Kind() != reflect.Struct {
 		panic("Apply only accepts a struct")
 	}
-	return inj.applyStruct(rv)
+	return inj.applyStruct(ctx, rv)
 }
 
 const tagOptional = "optional"
 
-func (inj *Injector) applyStruct(rv reflect.Value) error {
+func (inj *Injector) applyStruct(ctx context.Context, rv reflect.Value) error {
 	rt := rv.Type()
 
 	for i := 0; i < rv.NumField(); i++ {
@@ -231,7 +249,7 @@ func (inj *Injector) applyStruct(rv reflect.Value) error {
 				// If the field is unexported, we need to create a new field that is settable.
 				field = reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
 			}
-			dep, err := inj.resolve(field.Type())
+			dep, err := inj.resolve(ctx, field.Type())
 			if err != nil {
 				if errors.Is(err, ErrTypeNotProvided) && strings.TrimSpace(tag) == tagOptional {
 					continue
@@ -255,7 +273,11 @@ func (inj *Injector) Provide(fs ...any) error {
 }
 
 func (inj *Injector) Invoke(f any) ([]any, error) {
-	results, err := inj.invoke(f)
+	return inj.InvokeWithContext(context.Background(), f)
+}
+
+func (inj *Injector) InvokeWithContext(ctx Context, f any) ([]any, error) {
+	results, err := inj.invoke(ctx, f)
 	if err != nil {
 		return nil, err
 	}
@@ -266,11 +288,17 @@ func (inj *Injector) Invoke(f any) ([]any, error) {
 	return out, nil
 }
 
-func (inj *Injector) Resolve(ref any) error {
-	rv, err := inj.resolve(reflect.TypeOf(ref).Elem())
-	if err != nil {
-		return err
+func (inj *Injector) Resolve(refs ...any) error {
+	return inj.ResolveWithContext(context.Background(), refs...)
+}
+
+func (inj *Injector) ResolveWithContext(ctx Context, refs ...any) error {
+	for _, ref := range refs {
+		rv, err := inj.resolve(ctx, reflect.TypeOf(ref).Elem())
+		if err != nil {
+			return err
+		}
+		reflect.ValueOf(ref).Elem().Set(rv)
 	}
-	reflect.ValueOf(ref).Elem().Set(rv)
 	return nil
 }
