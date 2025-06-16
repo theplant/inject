@@ -123,8 +123,7 @@ func (lc *Lifecycle) Start(ctx context.Context) error {
 	}
 
 	lc.mu.RLock()
-	actors := make([]Actor, len(lc.actors))
-	copy(actors, lc.actors)
+	actors := slices.Clone(lc.actors)
 	lc.mu.RUnlock()
 
 	for _, actor := range actors {
@@ -145,8 +144,7 @@ func (lc *Lifecycle) Stop(ctx context.Context) error {
 	}
 
 	lc.mu.RLock()
-	actors := make([]Actor, len(lc.actors))
-	copy(actors, lc.actors)
+	actors := slices.Clone(lc.actors)
 	lc.mu.RUnlock()
 
 	var errs []error
