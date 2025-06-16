@@ -190,12 +190,12 @@ func TestResolve(t *testing.T) {
 
 		// Test non-pointer argument
 		var str string
-		err = injector.ResolveWithContext(context.Background(), str)
+		err = injector.ResolveContext(context.Background(), str)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "resolve requires pointer arguments")
 
 		// Test nil argument
-		err = injector.ResolveWithContext(context.Background(), nil)
+		err = injector.ResolveContext(context.Background(), nil)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "resolve requires pointer arguments")
 	}
@@ -387,7 +387,7 @@ func TestAutoApply(t *testing.T) {
 	}
 }
 
-func TestResolveWithContext(t *testing.T) {
+func TestResolveContext(t *testing.T) {
 	// Test basic functionality and context-aware constructors
 	{
 		injector := New()
@@ -406,7 +406,7 @@ func TestResolveWithContext(t *testing.T) {
 		// Test with custom context value
 		ctx := context.WithValue(context.Background(), key, "custom-value")
 		var str string
-		err = injector.ResolveWithContext(ctx, &str)
+		err = injector.ResolveContext(ctx, &str)
 		require.NoError(t, err)
 		require.Equal(t, "custom-value", str)
 	}
@@ -421,7 +421,7 @@ func TestResolveWithContext(t *testing.T) {
 		require.NoError(t, err)
 
 		var str string
-		err = injector.ResolveWithContext(context.Background(), &str)
+		err = injector.ResolveContext(context.Background(), &str)
 		require.NoError(t, err)
 		require.Equal(t, "context-aware", str)
 	}
@@ -445,7 +445,7 @@ func TestResolveWithContext(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
 		var str string
-		err = injector.ResolveWithContext(ctx, &str)
+		err = injector.ResolveContext(ctx, &str)
 		require.ErrorIs(t, err, testErr)
 	}
 
@@ -464,7 +464,7 @@ func TestResolveWithContext(t *testing.T) {
 
 		var num int
 		var str string
-		err = injector.ResolveWithContext(context.Background(), &num, &str)
+		err = injector.ResolveContext(context.Background(), &num, &str)
 		require.NoError(t, err)
 		require.Equal(t, 42, num)
 		require.Equal(t, "dependency", str)
@@ -484,8 +484,8 @@ func TestResolveWithContext(t *testing.T) {
 		// Test compatibility with regular Resolve
 		err = child.Resolve(&str1)
 		require.NoError(t, err)
-		// Test ResolveWithContext
-		err = child.ResolveWithContext(context.Background(), &str2)
+		// Test ResolveContext
+		err = child.ResolveContext(context.Background(), &str2)
 		require.NoError(t, err)
 		require.Equal(t, "from-parent", str1)
 		require.Equal(t, "from-parent", str2)
@@ -513,7 +513,7 @@ func TestResolveWithContext(t *testing.T) {
 
 		ctx := context.WithValue(context.Background(), key, "passed-through")
 		var str string
-		err = injector.ResolveWithContext(ctx, &str)
+		err = injector.ResolveContext(ctx, &str)
 		require.NoError(t, err)
 		require.Equal(t, "passed-through", str)
 	}
@@ -539,13 +539,13 @@ func TestResolveWithContext(t *testing.T) {
 
 		actualCtx := context.WithValue(context.Background(), "actual", "from-resolve")
 		var str string
-		err = injector.ResolveWithContext(actualCtx, &str)
+		err = injector.ResolveContext(actualCtx, &str)
 		require.NoError(t, err)
 		require.Equal(t, "from-resolve", str)
 	}
 }
 
-func TestApplyWithContext(t *testing.T) {
+func TestApplyContext(t *testing.T) {
 	type TestStruct struct {
 		Value string `inject:""`
 		Num   int    `inject:""`
@@ -576,7 +576,7 @@ func TestApplyWithContext(t *testing.T) {
 		ctx = context.WithValue(ctx, "numKey", 42)
 
 		testStruct := &TestStruct{}
-		err = injector.ApplyWithContext(ctx, testStruct)
+		err = injector.ApplyContext(ctx, testStruct)
 		require.NoError(t, err)
 		require.Equal(t, "context-value", testStruct.Value)
 		require.Equal(t, 42, testStruct.Num)
@@ -611,7 +611,7 @@ func TestApplyWithContext(t *testing.T) {
 	}
 }
 
-func TestInvokeWithContext(t *testing.T) {
+func TestInvokeContext(t *testing.T) {
 	// Test with context values
 	{
 		injector := New()
@@ -627,7 +627,7 @@ func TestInvokeWithContext(t *testing.T) {
 		require.NoError(t, err)
 
 		ctx := context.WithValue(context.Background(), key, "invoke-value")
-		results, err := injector.InvokeWithContext(ctx, func(s string) (string, int) {
+		results, err := injector.InvokeContext(ctx, func(s string) (string, int) {
 			return s + "-processed", len(s)
 		})
 		require.NoError(t, err)
@@ -673,7 +673,7 @@ func TestInvokeWithContext(t *testing.T) {
 		require.NoError(t, err)
 
 		ctx := context.WithValue(context.Background(), key, "invoke-value")
-		results, err := injector.InvokeWithContext(ctx, func(s string, ctx Context) string {
+		results, err := injector.InvokeContext(ctx, func(s string, ctx Context) string {
 			if val := ctx.Value(key); val != nil {
 				return s + "-" + val.(string)
 			}
@@ -707,7 +707,7 @@ func TestTypeNotAllowed(t *testing.T) {
 	require.NoError(t, err)
 
 	var result string
-	err = injector.ResolveWithContext(context.Background(), &result)
+	err = injector.ResolveContext(context.Background(), &result)
 	require.NoError(t, err)
 	require.Equal(t, "works", result)
 

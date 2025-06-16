@@ -223,10 +223,10 @@ func unwrapPtr(rv reflect.Value) reflect.Value {
 }
 
 func (inj *Injector) Apply(val any) error {
-	return inj.ApplyWithContext(context.Background(), val)
+	return inj.ApplyContext(context.Background(), val)
 }
 
-func (inj *Injector) ApplyWithContext(ctx Context, val any) error {
+func (inj *Injector) ApplyContext(ctx Context, val any) error {
 	rv := unwrapPtr(reflect.ValueOf(val))
 	if rv.Kind() != reflect.Struct {
 		return ErrInvalidApplyTarget
@@ -320,10 +320,10 @@ func (inj *Injector) Provide(ctors ...any) (xerr error) {
 }
 
 func (inj *Injector) Invoke(f any) ([]any, error) {
-	return inj.InvokeWithContext(context.Background(), f)
+	return inj.InvokeContext(context.Background(), f)
 }
 
-func (inj *Injector) InvokeWithContext(ctx Context, f any) ([]any, error) {
+func (inj *Injector) InvokeContext(ctx Context, f any) ([]any, error) {
 	results, err := inj.invoke(ctx, f)
 	if err != nil {
 		return nil, err
@@ -336,10 +336,10 @@ func (inj *Injector) InvokeWithContext(ctx Context, f any) ([]any, error) {
 }
 
 func (inj *Injector) Resolve(refs ...any) error {
-	return inj.ResolveWithContext(context.Background(), refs...)
+	return inj.ResolveContext(context.Background(), refs...)
 }
 
-func (inj *Injector) ResolveWithContext(ctx Context, refs ...any) error {
+func (inj *Injector) ResolveContext(ctx Context, refs ...any) error {
 	for _, ref := range refs {
 		refType := reflect.TypeOf(ref)
 		if refType == nil || refType.Kind() != reflect.Ptr {

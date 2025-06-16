@@ -182,7 +182,7 @@ func (lc *Lifecycle) ResolveAll(ctx context.Context) error {
 		ptr := reflect.New(ty)
 
 		// Resolve the type using the child injector
-		if err := lc.ResolveWithContext(ctx, ptr.Interface()); err != nil {
+		if err := lc.ResolveContext(ctx, ptr.Interface()); err != nil {
 			return err
 		}
 	}
