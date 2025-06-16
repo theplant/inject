@@ -635,3 +635,30 @@ func TestInvokeWithContext(t *testing.T) {
 		require.Equal(t, "invoke-value-invoke-value", results[0])
 	}
 }
+
+func TestContextNotAllowed(t *testing.T) {
+	injector := New()
+
+	// Test that providing inject.Context is not allowed
+	err := injector.Provide(func() Context {
+		return context.Background()
+	})
+	require.ErrorIs(t, err, ErrContextNotAllowed)
+
+	// Test that providing inject.Context with other types is also not allowed
+	err = injector.Provide(func() (string, Context) {
+		return "test", context.Background()
+	})
+	require.ErrorIs(t, err, ErrContextNotAllowed)
+
+	// Test that normal context.Context usage in constructors still works
+	err = injector.Provide(func(ctx Context) string {
+		return "works"
+	})
+	require.NoError(t, err)
+
+	var result string
+	err = injector.ResolveWithContext(context.Background(), &result)
+	require.NoError(t, err)
+	require.Equal(t, "works", result)
+}

@@ -122,7 +122,7 @@ type Context context.Context
 
 var typeContext = reflect.TypeOf((*Context)(nil)).Elem()
 
-func (inj *Injector) invoke(ctx context.Context, f any) ([]reflect.Value, error) {
+func (inj *Injector) invoke(ctx Context, f any) ([]reflect.Value, error) {
 	rt := reflect.TypeOf(f)
 	if rt.Kind() != reflect.Func {
 		panic("Invoke only accepts a function")
@@ -133,7 +133,7 @@ func (inj *Injector) invoke(ctx context.Context, f any) ([]reflect.Value, error)
 	for i := 0; i < numIn; i++ {
 		argType := rt.In(i)
 		if argType == typeContext {
-			in[i] = reflect.ValueOf(Context(ctx))
+			in[i] = reflect.ValueOf(ctx)
 			continue
 		}
 		argValue, err := inj.resolve(ctx, argType)
@@ -167,7 +167,7 @@ func (inj *Injector) invoke(ctx context.Context, f any) ([]reflect.Value, error)
 	return outs, nil
 }
 
-func (inj *Injector) resolve(ctx context.Context, rt reflect.Type) (reflect.Value, error) {
+func (inj *Injector) resolve(ctx Context, rt reflect.Type) (reflect.Value, error) {
 	inj.mu.RLock()
 	rv := inj.values[rt]
 	if rv.IsValid() {
@@ -238,7 +238,7 @@ func (inj *Injector) ApplyWithContext(ctx Context, val any) error {
 
 const tagOptional = "optional"
 
-func (inj *Injector) applyStruct(ctx context.Context, rv reflect.Value) error {
+func (inj *Injector) applyStruct(ctx Context, rv reflect.Value) error {
 	rt := rv.Type()
 
 	for i := 0; i < rv.NumField(); i++ {
