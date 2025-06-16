@@ -17,11 +17,11 @@ import (
 type DB struct {
 	Name    string
 	Payload string
-	closed  bool
+	closed  atomic.Bool
 }
 
 func (db *DB) Close() error {
-	db.closed = true
+	db.closed.Store(true)
 	return nil
 }
 
@@ -150,7 +150,7 @@ func TestLifecycle(t *testing.T) {
 
 		require.Equal(t, "test_db", db.Name)
 		require.Equal(t, "testDBPayload", db.Payload)
-		require.True(t, db.closed)
+		require.True(t, db.closed.Load())
 	})
 	require.NoError(t, err)
 }
