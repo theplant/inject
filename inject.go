@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"unsafe"
@@ -32,7 +33,7 @@ var (
 	typeContext = reflect.TypeOf((*Context)(nil)).Elem()
 )
 
-func isTypeAllowed(typ reflect.Type) bool {
+func IsTypeAllowed(typ reflect.Type) bool {
 	return typ != typeContext && typ != typeError
 }
 
@@ -58,7 +59,7 @@ func New() *Injector {
 		providers:      map[reflect.Type]*provider{},
 		maxProviderSeq: 0,
 	}
-	inj.Provide(func() *Injector { return inj })
+	_ = inj.Provide(func() *Injector { return inj })
 	return inj
 }
 
@@ -130,7 +131,7 @@ func (inj *Injector) invoke(ctx Context, f any) ([]reflect.Value, error) {
 			in[i] = reflect.ValueOf(ctx)
 			continue
 		}
-		if !isTypeAllowed(argType) {
+		if !IsTypeAllowed(argType) {
 			return nil, fmt.Errorf("%w: %s", ErrTypeNotAllowed, argType.String())
 		}
 		argValue, err := inj.resolve(ctx, argType)
@@ -177,7 +178,7 @@ func (inj *Injector) resolve(ctx Context, rt reflect.Type) (reflect.Value, error
 
 	if ok {
 		// ensure that the provider is only executed once same time
-		_, err, _ := inj.sfg.Do(fmt.Sprintf("%d", provider.seq), func() (any, error) {
+		_, err, _ := inj.sfg.Do(strconv.FormatUint(provider.seq, 10), func() (any, error) {
 			// must recheck the provider, because it may be deleted by prev inj.sfg.Do
 			inj.mu.RLock()
 			_, ok := inj.providers[rt]
@@ -244,7 +245,7 @@ func (inj *Injector) applyStruct(ctx Context, rv reflect.Value) error {
 	for i := 0; i < rv.NumField(); i++ {
 		structField := rt.Field(i)
 		if tag, ok := structField.Tag.Lookup(tagName); ok {
-			if !isTypeAllowed(structField.Type) {
+			if !IsTypeAllowed(structField.Type) {
 				return fmt.Errorf("%w: %s", ErrTypeNotAllowed, structField.Type.String())
 			}
 
@@ -340,7 +341,12 @@ func (inj *Injector) Resolve(refs ...any) error {
 
 func (inj *Injector) ResolveWithContext(ctx Context, refs ...any) error {
 	for _, ref := range refs {
-		rv, err := inj.resolve(ctx, reflect.TypeOf(ref).Elem())
+		refType := reflect.TypeOf(ref)
+		if refType == nil || refType.Kind() != reflect.Ptr {
+			return fmt.Errorf("resolve requires pointer arguments, got %T", ref)
+		}
+
+		rv, err := inj.resolve(ctx, refType.Elem())
 		if err != nil {
 			return err
 		}
@@ -373,7 +379,7 @@ func getValidOutputTypes(rt reflect.Type) ([]reflect.Type, error) {
 			continue
 		}
 
-		if !isTypeAllowed(outType) {
+		if !IsTypeAllowed(outType) {
 			return nil, fmt.Errorf("%w: %s", ErrTypeNotAllowed, outType.String())
 		}
 

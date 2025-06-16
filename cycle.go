@@ -117,7 +117,7 @@ func (inj *Injector) unsafeGetDirectDependencies(targetType reflect.Type) ([]dir
 		for i := 0; i < providerType.NumIn(); i++ {
 			inType := providerType.In(i)
 			if inType != typeContext && !seen[inType] {
-				if !isTypeAllowed(inType) {
+				if !IsTypeAllowed(inType) {
 					return nil, fmt.Errorf("%w: %s", ErrTypeNotAllowed, inType.String())
 				}
 				deps = append(deps, directDep{
@@ -159,7 +159,7 @@ func getStructFieldDependencies(t reflect.Type) ([]reflect.Type, error) {
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
-		if !isTypeAllowed(field.Type) {
+		if !IsTypeAllowed(field.Type) {
 			return nil, fmt.Errorf("%w: %s", ErrTypeNotAllowed, field.Type.String())
 		}
 		if _, ok := field.Tag.Lookup(tagName); ok {

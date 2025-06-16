@@ -181,6 +181,24 @@ func TestResolve(t *testing.T) {
 		require.Equal(t, 1, b)
 		require.Equal(t, int32(2), c)
 	}
+
+	// Test invalid argument types for Resolve
+	{
+		injector := New()
+		err := injector.Provide(func() string { return "test" })
+		require.NoError(t, err)
+
+		// Test non-pointer argument
+		var str string
+		err = injector.ResolveWithContext(context.Background(), str)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "resolve requires pointer arguments")
+
+		// Test nil argument
+		err = injector.ResolveWithContext(context.Background(), nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "resolve requires pointer arguments")
+	}
 }
 
 func TestApply(t *testing.T) {
