@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"strings"
 	"sync"
@@ -16,8 +17,24 @@ var (
 	ErrTypeNotProvided     = errors.New("type not provided")
 	ErrTypeAlreadyProvided = errors.New("type already provided")
 	ErrParentAlreadySet    = errors.New("parent already set")
-	ErrContextNotAllowed   = errors.New("inject.Context not allowed")
+	ErrTypeNotAllowed      = errors.New("type not allowed")
+	ErrCircularDependency  = errors.New("circular dependency detected")
+	ErrErrorTypeMustBeLast = errors.New("error type must be the last return value")
+	ErrInvalidProvider     = errors.New("provide only accepts a function that returns at least one type except error")
+	ErrInvalidInvokeTarget = errors.New("invoke only accepts a function")
+	ErrInvalidApplyTarget  = errors.New("apply only accepts a struct")
 )
+
+type Context context.Context
+
+var (
+	typeError   = reflect.TypeOf((*error)(nil)).Elem()
+	typeContext = reflect.TypeOf((*Context)(nil)).Elem()
+)
+
+func isTypeAllowed(typ reflect.Type) bool {
+	return typ != typeContext && typ != typeError
+}
 
 type provider struct {
 	seq  uint64
@@ -55,50 +72,30 @@ func (inj *Injector) SetParent(parent *Injector) error {
 	return nil
 }
 
-var typeError = reflect.TypeOf((*error)(nil)).Elem()
-
-const invalidProvider = "Provide only accepts a function that returns at least one type except error"
-
-func (inj *Injector) provide(ctor any) (err error) {
+func (inj *Injector) unsafeProvide(ctor any) error {
 	rv := reflect.ValueOf(ctor)
 	rt := rv.Type()
 	if rt.Kind() != reflect.Func {
-		panic(invalidProvider)
+		return ErrInvalidProvider
 	}
 
-	inj.mu.Lock()
-	defer inj.mu.Unlock()
+	// Get valid output types with error position validation
+	outputTypes, err := getValidOutputTypes(rt)
+	if err != nil {
+		return err
+	}
 
-	setted := []reflect.Type{}
-	defer func() {
-		if err != nil {
-			for _, t := range setted {
-				delete(inj.providers, t)
-			}
-		}
-	}()
-
-	numOut := rt.NumOut()
-	if numOut == 0 {
-		panic(invalidProvider)
+	if len(outputTypes) == 0 {
+		return ErrInvalidProvider
 	}
 
 	provider := &provider{
-		seq:  inj.maxProviderSeq + 1,
+		seq:  inj.maxProviderSeq,
 		ctor: ctor,
 	}
-	for i := 0; i < numOut; i++ {
-		outType := rt.Out(i)
+	inj.maxProviderSeq++
 
-		// skip error type if it is the last return value
-		if i == numOut-1 && outType == typeError {
-			continue
-		}
-
-		if outType == typeContext {
-			return fmt.Errorf("%w: %s", ErrContextNotAllowed, outType.String())
-		}
-
+	for _, outType := range outputTypes {
 		if _, ok := inj.values[outType]; ok {
 			return fmt.Errorf("%w: %s", ErrTypeAlreadyProvided, outType.String())
 		}
@@ -108,24 +105,21 @@ func (inj *Injector) provide(ctor any) (err error) {
 		}
 
 		inj.providers[outType] = provider
-		setted = append(setted, outType)
 	}
-	if len(setted) == 0 {
-		panic(invalidProvider)
+
+	for _, outType := range outputTypes {
+		if err := inj.unsafeDFSDetectCycle(outType); err != nil {
+			return err
+		}
 	}
-	inj.maxProviderSeq++
 
 	return nil
 }
 
-type Context context.Context
-
-var typeContext = reflect.TypeOf((*Context)(nil)).Elem()
-
 func (inj *Injector) invoke(ctx Context, f any) ([]reflect.Value, error) {
 	rt := reflect.TypeOf(f)
 	if rt.Kind() != reflect.Func {
-		panic("Invoke only accepts a function")
+		return nil, ErrInvalidInvokeTarget
 	}
 
 	numIn := rt.NumIn()
@@ -135,6 +129,9 @@ func (inj *Injector) invoke(ctx Context, f any) ([]reflect.Value, error) {
 		if argType == typeContext {
 			in[i] = reflect.ValueOf(ctx)
 			continue
+		}
+		if !isTypeAllowed(argType) {
+			return nil, fmt.Errorf("%w: %s", ErrTypeNotAllowed, argType.String())
 		}
 		argValue, err := inj.resolve(ctx, argType)
 		if err != nil {
@@ -231,30 +228,38 @@ func (inj *Injector) Apply(val any) error {
 func (inj *Injector) ApplyWithContext(ctx Context, val any) error {
 	rv := unwrapPtr(reflect.ValueOf(val))
 	if rv.Kind() != reflect.Struct {
-		panic("Apply only accepts a struct")
+		return ErrInvalidApplyTarget
 	}
 	return inj.applyStruct(ctx, rv)
 }
 
-const tagOptional = "optional"
+const (
+	tagName     = "inject"
+	tagOptional = "optional"
+)
 
 func (inj *Injector) applyStruct(ctx Context, rv reflect.Value) error {
 	rt := rv.Type()
 
 	for i := 0; i < rv.NumField(); i++ {
-		field := rv.Field(i)
 		structField := rt.Field(i)
-		if tag, ok := structField.Tag.Lookup("inject"); ok {
-			if !field.CanSet() {
-				// If the field is unexported, we need to create a new field that is settable.
-				field = reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
+		if tag, ok := structField.Tag.Lookup(tagName); ok {
+			if !isTypeAllowed(structField.Type) {
+				return fmt.Errorf("%w: %s", ErrTypeNotAllowed, structField.Type.String())
 			}
-			dep, err := inj.resolve(ctx, field.Type())
+
+			dep, err := inj.resolve(ctx, structField.Type)
 			if err != nil {
 				if errors.Is(err, ErrTypeNotProvided) && strings.TrimSpace(tag) == tagOptional {
 					continue
 				}
 				return err
+			}
+
+			field := rv.Field(i)
+			if !field.CanSet() {
+				// If the field is unexported, we need to create a new field that is settable.
+				field = reflect.NewAt(structField.Type, unsafe.Pointer(field.UnsafeAddr())).Elem()
 			}
 			field.Set(dep)
 		}
@@ -265,7 +270,7 @@ func (inj *Injector) applyStruct(ctx Context, rv reflect.Value) error {
 
 // flat recursively flattens any arrays/slices found in the arguments.
 // This allows grouping related constructors together for better organization.
-func flat(vs ...any) []any {
+func Flatten(vs ...any) []any {
 	var result []any
 
 	for _, f := range vs {
@@ -279,7 +284,7 @@ func flat(vs ...any) []any {
 				subItems[i] = rv.Index(i).Interface()
 			}
 			// Recursively flatten the sub-items
-			result = append(result, flat(subItems...)...)
+			result = append(result, Flatten(subItems...)...)
 		} else {
 			// Regular constructor function, add directly
 			result = append(result, f)
@@ -289,12 +294,27 @@ func flat(vs ...any) []any {
 	return result
 }
 
-func (inj *Injector) Provide(ctors ...any) error {
-	for _, ctor := range flat(ctors...) {
-		if err := inj.provide(ctor); err != nil {
+func (inj *Injector) Provide(ctors ...any) (xerr error) {
+	ctors = Flatten(ctors...)
+
+	inj.mu.Lock()
+	defer inj.mu.Unlock()
+
+	originalProviders := maps.Clone(inj.providers)
+	originalMaxSeq := inj.maxProviderSeq
+	defer func() {
+		if xerr != nil {
+			inj.providers = originalProviders
+			inj.maxProviderSeq = originalMaxSeq
+		}
+	}()
+
+	for _, ctor := range ctors {
+		if err := inj.unsafeProvide(ctor); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -327,4 +347,41 @@ func (inj *Injector) ResolveWithContext(ctx Context, refs ...any) error {
 		reflect.ValueOf(ref).Elem().Set(rv)
 	}
 	return nil
+}
+
+// getValidOutputTypes extracts all valid output types from a constructor function type,
+// performing error type position validation and filtering out error types
+func getValidOutputTypes(rt reflect.Type) ([]reflect.Type, error) {
+	if rt.Kind() != reflect.Func {
+		return nil, nil
+	}
+
+	var outputTypes []reflect.Type
+	seen := make(map[reflect.Type]bool) // Use map for deduplication
+	numOut := rt.NumOut()
+
+	for i := 0; i < numOut; i++ {
+		outType := rt.Out(i)
+
+		// Validate error type position: error can only be the last return value
+		if outType == typeError {
+			if i != numOut-1 {
+				return nil, fmt.Errorf("%w: error type found at position %d, but must be at position %d",
+					ErrErrorTypeMustBeLast, i, numOut-1)
+			}
+			// Skip error type if it is the last return value
+			continue
+		}
+
+		if !isTypeAllowed(outType) {
+			return nil, fmt.Errorf("%w: %s", ErrTypeNotAllowed, outType.String())
+		}
+
+		if !seen[outType] {
+			outputTypes = append(outputTypes, outType)
+			seen[outType] = true
+		}
+	}
+
+	return outputTypes, nil
 }

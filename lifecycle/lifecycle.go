@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -250,6 +251,8 @@ var typeError = reflect.TypeOf((*error)(nil)).Elem()
 // Provide registers constructors and tracks all non-error return types for auto-resolution.
 // This overrides the embedded Injector's Provide method to enable auto-resolution of types.
 func (lc *Lifecycle) Provide(ctors ...any) error {
+	ctors = inject.Flatten(ctors...)
+
 	// First, register with the embedded injector
 	if err := lc.Injector.Provide(ctors...); err != nil {
 		return err
@@ -261,9 +264,6 @@ func (lc *Lifecycle) Provide(ctors ...any) error {
 	// Track all non-error return types
 	for _, ctor := range ctors {
 		ctorType := reflect.TypeOf(ctor)
-		if ctorType.Kind() != reflect.Func {
-			continue
-		}
 
 		// Check return types
 		for i := 0; i < ctorType.NumOut(); i++ {
@@ -285,9 +285,10 @@ func (lc *Lifecycle) Provide(ctors ...any) error {
 // ResolveAll automatically resolves all provided types using a clean child injector.
 func (lc *Lifecycle) ResolveAll(ctx context.Context) error {
 	lc.mu.Lock()
-	typesToResolve := make([]reflect.Type, len(lc.typesToResolve))
-	copy(typesToResolve, lc.typesToResolve)
+	typesToResolve := slices.Clone(lc.typesToResolve)
 	lc.mu.Unlock()
+
+	slices.Reverse(typesToResolve)
 
 	for _, ty := range typesToResolve {
 		// Create a pointer to the type for resolution

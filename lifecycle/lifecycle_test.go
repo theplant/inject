@@ -122,3 +122,26 @@ func TestLifecycle(t *testing.T) {
 		require.True(t, db.closed)
 	})
 }
+
+func TestCircularDependencyDetectionInLifecycle(t *testing.T) {
+	lc := lifecycle.New()
+
+	type Config struct {
+		Port int
+	}
+
+	type Service struct {
+		Config *Config `inject:""`
+	}
+
+	// This should trigger circular dependency detection
+	err := lc.Provide(func() (*Config, *Service) {
+		conf := &Config{Port: 8080}
+		svc := &Service{} // This will create circular dependency
+		return conf, svc
+	})
+
+	// Should detect circular dependency at provide time, not runtime
+	require.ErrorIs(t, err, inject.ErrCircularDependency)
+	require.Contains(t, err.Error(), "*lifecycle_test.Config -> *lifecycle_test.Config@*lifecycle_test.Service")
+}

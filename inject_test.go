@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,21 +30,18 @@ func TestSetParent(t *testing.T) {
 func TestProvide(t *testing.T) {
 	{
 		injector := New()
-		require.Panics(t, func() {
-			injector.Provide("testNotFunc")
-		})
+		err := injector.Provide("testNotFunc")
+		require.ErrorIs(t, err, ErrInvalidProvider)
 	}
 	{
 		injector := New()
-		require.Panics(t, func() {
-			injector.Provide(func() {})
-		})
+		err := injector.Provide(func() {})
+		require.ErrorIs(t, err, ErrInvalidProvider)
 	}
 	{
 		injector := New()
-		require.Panics(t, func() {
-			injector.Provide(func() error { return nil })
-		})
+		err := injector.Provide(func() error { return nil })
+		require.ErrorIs(t, err, ErrInvalidProvider)
 	}
 	{
 		injector := New()
@@ -74,6 +72,41 @@ func TestProvide(t *testing.T) {
 		require.ErrorIs(t, err, ErrTypeAlreadyProvided)
 		require.Len(t, injector.providers, 1)
 	}
+
+	// Test transactional behavior: if one constructor fails, all should be rolled back
+	{
+		injector := New()
+		originalCount := len(injector.providers)
+
+		err := injector.Provide(
+			func() string { return "test1" },
+			func() int { return 42 },
+			func() string { return "test2" }, // This should conflict with the first one
+		)
+		require.ErrorIs(t, err, ErrTypeAlreadyProvided)
+		// Should have same number of providers as before (rollback)
+		require.Equal(t, originalCount, len(injector.providers))
+	}
+
+	// Test transactional behavior with nested arrays
+	{
+		injector := New()
+		originalCount := len(injector.providers)
+
+		httpGroup := []any{
+			func() string { return "http-config" },
+			func() int { return 8080 },
+		}
+
+		err := injector.Provide(
+			func() bool { return true },
+			httpGroup,
+			func() string { return "conflict" }, // This should conflict with the string in httpGroup
+		)
+		require.ErrorIs(t, err, ErrTypeAlreadyProvided)
+		// Should have same number of providers as before (rollback)
+		require.Equal(t, originalCount, len(injector.providers))
+	}
 }
 
 func TestInvoke(t *testing.T) {
@@ -81,9 +114,8 @@ func TestInvoke(t *testing.T) {
 	err := injector.Provide(func() string { return "test" })
 	require.NoError(t, err)
 
-	require.Panics(t, func() {
-		injector.Invoke("testNotFunc")
-	})
+	_, err = injector.Invoke("testNotFunc")
+	require.ErrorIs(t, err, ErrInvalidInvokeTarget)
 
 	results, err := injector.Invoke(func(s string) string { return s })
 	require.NoError(t, err)
@@ -176,9 +208,8 @@ func TestApply(t *testing.T) {
 	require.Equal(t, "", testStruct.ID)
 	require.Equal(t, injector, testStruct.Injector)
 
-	require.Panics(t, func() {
-		injector.Apply("testNotStruct")
-	})
+	err = injector.Apply("testNotStruct")
+	require.ErrorIs(t, err, ErrInvalidApplyTarget)
 }
 
 func TestMultipleProviders(t *testing.T) {
@@ -442,7 +473,7 @@ func TestResolveWithContext(t *testing.T) {
 		require.Equal(t, "from-parent", str2)
 	}
 
-	// Test InjectContext passed to function requiring context.Context
+	// Test Context passed to function requiring context.Context
 	{
 		injector := New()
 		type contextKey string
@@ -457,7 +488,7 @@ func TestResolveWithContext(t *testing.T) {
 		}
 
 		err := injector.Provide(func(ctx Context) string {
-			// Pass InjectContext to function expecting context.Context
+			// Pass Context to function expecting context.Context
 			return processWithContext(ctx)
 		})
 		require.NoError(t, err)
@@ -469,15 +500,15 @@ func TestResolveWithContext(t *testing.T) {
 		require.Equal(t, "passed-through", str)
 	}
 
-	// Test what happens if InjectContext is also provided
+	// Test what happens if Context is also provided
 	{
 		injector := New()
 
-		// Provide a InjectContext (this should be ignored)
+		// Provide a Context (this should be ignored)
 		err := injector.Provide(func() Context {
 			return context.WithValue(context.Background(), "provided", "ignored")
 		})
-		require.ErrorIs(t, err, ErrContextNotAllowed)
+		require.ErrorIs(t, err, ErrTypeNotAllowed)
 
 		err = injector.Provide(func(ctx Context) string {
 			// Should get the actual inject context, not the provided one
@@ -636,20 +667,20 @@ func TestInvokeWithContext(t *testing.T) {
 	}
 }
 
-func TestContextNotAllowed(t *testing.T) {
+func TestTypeNotAllowed(t *testing.T) {
 	injector := New()
 
 	// Test that providing inject.Context is not allowed
 	err := injector.Provide(func() Context {
 		return context.Background()
 	})
-	require.ErrorIs(t, err, ErrContextNotAllowed)
+	require.ErrorIs(t, err, ErrTypeNotAllowed)
 
 	// Test that providing inject.Context with other types is also not allowed
 	err = injector.Provide(func() (string, Context) {
 		return "test", context.Background()
 	})
-	require.ErrorIs(t, err, ErrContextNotAllowed)
+	require.ErrorIs(t, err, ErrTypeNotAllowed)
 
 	// Test that normal context.Context usage in constructors still works
 	err = injector.Provide(func(ctx Context) string {
@@ -661,6 +692,66 @@ func TestContextNotAllowed(t *testing.T) {
 	err = injector.ResolveWithContext(context.Background(), &result)
 	require.NoError(t, err)
 	require.Equal(t, "works", result)
+
+	// Test that error type in Invoke function parameters is not allowed
+	{
+		injector2 := New()
+		_, err := injector2.Invoke(func(err error) string {
+			return "should not work"
+		})
+		require.ErrorIs(t, err, ErrTypeNotAllowed)
+	}
+
+	// Test that inject.Context type in Invoke function parameters is not allowed
+	{
+		injector3 := New()
+		_, err := injector3.Invoke(func(ctx Context, err error) string {
+			return "should not work"
+		})
+		require.ErrorIs(t, err, ErrTypeNotAllowed)
+	}
+
+	// Test that error type in struct field with inject tag is not allowed
+	{
+		injector4 := New()
+		type StructWithErrorField struct {
+			Err error `inject:""`
+		}
+		structWithError := &StructWithErrorField{}
+		err := injector4.Apply(structWithError)
+		require.ErrorIs(t, err, ErrTypeNotAllowed)
+	}
+
+	// Test that Context type in struct field with inject tag is not allowed
+	{
+		injector5 := New()
+		type StructWithContextField struct {
+			Ctx Context `inject:""`
+		}
+		structWithContext := &StructWithContextField{}
+		err := injector5.Apply(structWithContext)
+		require.ErrorIs(t, err, ErrTypeNotAllowed)
+	}
+
+	// Test that struct fields without inject tags are now allowed to have error/Context types
+	{
+		injector6 := New()
+		type StructWithoutInjectTags struct {
+			Err error   // No inject tag, should be allowed
+			Ctx Context // No inject tag, should be allowed
+			Val string  `inject:""`
+		}
+		err := injector6.Provide(func() string { return "test-value" })
+		require.NoError(t, err)
+
+		structWithoutTags := &StructWithoutInjectTags{}
+		err = injector6.Apply(structWithoutTags)
+		require.NoError(t, err)
+		require.Equal(t, "test-value", structWithoutTags.Val)
+		// Error and Context fields should remain zero values since they don't have inject tags
+		require.Nil(t, structWithoutTags.Err)
+		require.Nil(t, structWithoutTags.Ctx)
+	}
 }
 
 func TestProvideArrayFlattening(t *testing.T) {
@@ -759,4 +850,206 @@ func TestProvideEmptyArrayHandling(t *testing.T) {
 
 	require.Equal(t, "test", str)
 	require.Equal(t, 42, num)
+}
+
+func TestCircularDependencyDetection(t *testing.T) {
+	// Test case: Simple A -> B -> A circular dependency
+	{
+		injector := New()
+
+		type A struct {
+			Value string
+		}
+
+		type B struct {
+			Value string
+		}
+
+		// This creates circular dependency: A constructor depends on *B, B constructor depends on *A
+		err := injector.Provide(
+			func(b *B) *A { return &A{Value: "A needs B"} },
+			func(a *A) *B { return &B{Value: "B needs A"} },
+		)
+
+		assert.ErrorIs(t, err, ErrCircularDependency)
+		assert.Contains(t, err.Error(), "*inject.B -> *inject.A -> *inject.B")
+	}
+
+	// Test case: Three-way circular dependency A -> B -> C -> A
+	{
+		injector := New()
+
+		type A struct {
+			Value string
+		}
+
+		type B struct {
+			Value string
+		}
+
+		type C struct {
+			Value string
+		}
+
+		// This creates circular dependency: A -> B -> C -> A
+		err := injector.Provide(
+			func(c *C) *A { return &A{Value: "A needs C"} },
+			func(a *A) *B { return &B{Value: "B needs A"} },
+			func(b *B) *C { return &C{Value: "C needs B"} },
+		)
+
+		assert.ErrorIs(t, err, ErrCircularDependency)
+		assert.Contains(t, err.Error(), "*inject.C -> *inject.B -> *inject.A -> *inject.C")
+	}
+}
+
+func TestCoConstructorCircularDependencyDetection(t *testing.T) {
+	// Test case: Reproduce the real circular dependency problem we encountered
+	{
+		injector := New()
+
+		type Config struct {
+			Port int
+		}
+
+		type Service struct {
+			Config *Config `inject:""`
+		}
+
+		// This mimics the original problem: a function that returns both Config and Service
+		// where Service has an inject tag for Config - this creates a circular dependency
+		err := injector.Provide(func() (*Config, *Service) {
+			conf := &Config{Port: 8080}
+			svc := &Service{} // Service will be auto-injected with Config
+			return conf, svc
+		})
+
+		assert.ErrorIs(t, err, ErrCircularDependency)
+		assert.Contains(t, err.Error(), "*inject.Config -> *inject.Config@*inject.Service")
+	}
+
+	// Test case: Cross-constructor circular dependency detection
+	{
+		injector := New()
+
+		// Define all types in the same scope
+		type (
+			ConfigA struct {
+				Port int
+			}
+
+			ProxyA struct {
+				Config *ConfigA `inject:""`
+			}
+
+			ServiceA struct {
+				Proxy *ProxyA `inject:""`
+			}
+		)
+
+		// *inject.ProxyA@*inject.ServiceA ->
+		// *inject.ConfigA@*inject.ProxyA ->
+		// *inject.ProxyA@*inject.ServiceA (through same constructor)
+		err := injector.Provide(
+			func() *ProxyA {
+				return &ProxyA{}
+			},
+			func() (*ServiceA, *ConfigA) {
+				return &ServiceA{}, &ConfigA{Port: 8080}
+			})
+
+		assert.ErrorIs(t, err, ErrCircularDependency)
+		assert.Contains(t, err.Error(), "*inject.ProxyA@*inject.ServiceA -> *inject.ConfigA@*inject.ProxyA -> *inject.ProxyA@*inject.ServiceA")
+	}
+
+	// Test case: Complex co-constructor circular dependency
+	// A -> C -> B, where A and B are co-constructors
+	{
+		injector := New()
+
+		type (
+			B struct {
+				// B doesn't directly depend on anything
+			}
+
+			C struct {
+				B *B `inject:""`
+			}
+
+			A struct {
+				C *C `inject:""`
+			}
+		)
+
+		err := injector.Provide(
+			// Cycle: A -> C@A -> B@C -> C@A (A and B are co-constructors)
+			func() (*A, *B) { // A and B are co-constructors
+				return &A{}, &B{}
+			},
+			func() *C {
+				return &C{}
+			},
+		)
+		assert.ErrorIs(t, err, ErrCircularDependency)
+		assert.Contains(t, err.Error(), "*inject.C@*inject.A -> *inject.B@*inject.C -> *inject.C@*inject.A")
+	}
+}
+
+func TestErrorTypePositionValidation(t *testing.T) {
+	// Test case 1: Error type in the middle should fail
+	{
+		injector := New()
+
+		err := injector.Provide(func() (string, error, int) {
+			return "test", nil, 42
+		})
+
+		require.ErrorIs(t, err, ErrErrorTypeMustBeLast)
+		require.Contains(t, err.Error(), "error type found at position 1, but must be at position 2")
+	}
+
+	// Test case 2: Error type at the beginning should fail
+	{
+		injector := New()
+
+		err := injector.Provide(func() (error, string, int) {
+			return nil, "test", 42
+		})
+
+		require.ErrorIs(t, err, ErrErrorTypeMustBeLast)
+		require.Contains(t, err.Error(), "error type found at position 0, but must be at position 2")
+	}
+
+	// Test case 3: Error type at the end should work
+	{
+		injector := New()
+
+		err := injector.Provide(func() (string, int, error) {
+			return "test", 42, nil
+		})
+
+		require.NoError(t, err)
+	}
+
+	// Test case 4: Only error type should return ErrInvalidProvider (no useful types provided)
+	{
+		injector := New()
+
+		err := injector.Provide(func() error {
+			return nil
+		})
+
+		require.ErrorIs(t, err, ErrInvalidProvider)
+	}
+
+	// Test case 5: No error type should work
+	{
+		injector := New()
+
+		err := injector.Provide(func() (string, int) {
+			return "test", 42
+		})
+
+		require.NoError(t, err)
+	}
 }
