@@ -2,6 +2,7 @@ package lifecycle_test
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,21 +13,9 @@ import (
 
 // Mock database following gorm.DB pattern and implementing Actor interface
 type DB struct {
-	Name   string
-	closed bool
-}
-
-func OpenDB(_ context.Context, name string) (*DB, error) {
-	return &DB{Name: name}, nil
-}
-
-func (db *DB) Start(ctx context.Context) error {
-	// Simulate database connection/initialization
-	return nil
-}
-
-func (db *DB) Stop(ctx context.Context) error {
-	return db.Close()
+	Name    string
+	Payload string
+	closed  bool
 }
 
 func (db *DB) Close() error {
@@ -34,46 +23,60 @@ func (db *DB) Close() error {
 	return nil
 }
 
+type ctxKeyPayload struct{}
+
+func OpenDB(ctx context.Context, name string) (*DB, error) {
+	payload, _ := ctx.Value(ctxKeyPayload{}).(string)
+	return &DB{Name: name, Payload: payload}, nil
+}
+
+func SetupDB(ctx inject.Context, lc *lifecycle.Lifecycle) (*DB, error) {
+	db, err := OpenDB(ctx, "test_db")
+	if err != nil {
+		return nil, err
+	}
+	lifecycle.Add(lc, lifecycle.NewFuncActor(nil, func(_ context.Context) error {
+		return db.Close()
+	}))
+	return db, nil
+}
+
 // HTTPService handles HTTP requests
 type HTTPService struct {
 	DB      *DB `inject:""`
-	done    chan struct{}
-	running bool
+	running int32
 }
 
-func (h *HTTPService) Start(ctx context.Context) error {
-	h.done = make(chan struct{})
-	h.running = true
-
-	// Simulate HTTP server start - run in background
-	go func() {
-		// Keep running until stopped
-		for h.running {
-			time.Sleep(10 * time.Millisecond)
+func (h *HTTPService) Serve() error {
+	atomic.StoreInt32(&h.running, 1)
+	for {
+		if atomic.LoadInt32(&h.running) == 0 {
+			return nil
 		}
-		// Signal completion when stopped
-		close(h.done)
-	}()
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (h *HTTPService) Close() error {
+	atomic.StoreInt32(&h.running, 0)
 	return nil
 }
 
-func (h *HTTPService) Stop(ctx context.Context) error {
-	h.running = false
-	// Wait for the service to actually stop
-	<-h.done
-	return nil
+func (h *HTTPService) IsRunning() bool {
+	return atomic.LoadInt32(&h.running) == 1
 }
 
-func (h *HTTPService) Done() <-chan struct{} {
-	return h.done
-}
-
-func (h *HTTPService) Err() error {
-	return nil
-}
-
-func NewHTTPService() *HTTPService {
-	return &HTTPService{}
+func SetupHTTPService(lc *lifecycle.Lifecycle) *HTTPService {
+	svc := &HTTPService{}
+	lc.Add(lifecycle.NewFuncService(
+		func(_ context.Context) error {
+			return svc.Serve()
+		},
+		func(_ context.Context) error {
+			return svc.Close()
+		},
+	))
+	return svc
 }
 
 func TestLifeCycleWithInject(t *testing.T) {
@@ -82,26 +85,17 @@ func TestLifeCycleWithInject(t *testing.T) {
 	// Provide dependencies directly to Lifecycle
 	require.NoError(t, lc.Provide(
 		// Signal service (Service)
-		lifecycle.AddSignalService,
+		lifecycle.SetupSignalService,
 		// Database dependency (Actor) - can receive context during construction
-		func(ctx inject.Context) (*DB, error) {
-			db, err := OpenDB(ctx, "test_db")
-			return lifecycle.AddE(lc, db, err)
-		},
+		SetupDB,
 		// HTTP service (Service)
-		lifecycle.LazyAdd(lc, NewHTTPService),
+		SetupHTTPService,
 	))
 
 	// Provide context for manual resolution
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-
-	type contextKey string
-	const key contextKey = "testKey"
-	ctx = context.WithValue(ctx, key, "testValue")
-	lc.Provide(func(ctx inject.Context) string {
-		return ctx.Value(key).(string)
-	})
+	ctx = context.WithValue(ctx, ctxKeyPayload{}, "testDBPayload")
 
 	// Test with timeout - context will be automatically provided to constructors
 	err := lc.Serve(ctx)
@@ -110,8 +104,10 @@ func TestLifeCycleWithInject(t *testing.T) {
 	// Verify dependency injection worked
 	lc.Invoke(func(db *DB, httpService *HTTPService, str string) {
 		require.Equal(t, db, httpService.DB)
+		require.False(t, httpService.IsRunning())
+
 		require.Equal(t, "test_db", db.Name)
+		require.Equal(t, "testDBPayload", db.Payload)
 		require.True(t, db.closed)
-		require.Equal(t, "testValue", str)
 	})
 }

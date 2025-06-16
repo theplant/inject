@@ -22,7 +22,7 @@ func NewSignalService() *SignalService {
 	}
 }
 
-func AddSignalService(lc *Lifecycle) *SignalService {
+func SetupSignalService(lc *Lifecycle) *SignalService {
 	return Add(lc, NewSignalService())
 }
 

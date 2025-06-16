@@ -40,19 +40,21 @@ func (f *FuncActor) Stop(ctx context.Context) error {
 // Useful for long-running background tasks that need to be monitored.
 type FuncService struct {
 	taskFunc func(ctx context.Context) error
+	stopFunc func(ctx context.Context) error
 	ctx      context.Context
 	cancel   context.CancelCauseFunc
 	doneC    chan struct{}
 }
 
 // NewFuncService creates a new FuncService with the provided task function.
-func NewFuncService(taskFunc func(ctx context.Context) error) *FuncService {
+func NewFuncService(taskFunc, stopFunc func(ctx context.Context) error) *FuncService {
 	if taskFunc == nil {
 		panic("taskFunc is required")
 	}
 	ctx, cancel := context.WithCancelCause(context.Background())
 	return &FuncService{
 		taskFunc: taskFunc,
+		stopFunc: stopFunc,
 		ctx:      ctx,
 		cancel:   cancel,
 		doneC:    make(chan struct{}),
@@ -60,11 +62,11 @@ func NewFuncService(taskFunc func(ctx context.Context) error) *FuncService {
 }
 
 // Start launches the background task in a separate goroutine.
-func (b *FuncService) Start(ctx context.Context) error {
+func (b *FuncService) Start(_ context.Context) error {
 	go func() (xerr error) {
 		defer close(b.doneC)
 		defer func() { b.cancel(xerr) }()
-		return b.taskFunc(ctx)
+		return b.taskFunc(b.ctx)
 	}()
 
 	return nil
@@ -73,6 +75,12 @@ func (b *FuncService) Start(ctx context.Context) error {
 // Stop cancels the background task and waits for completion.
 func (b *FuncService) Stop(ctx context.Context) error {
 	b.cancel(nil)
+
+	if b.stopFunc != nil {
+		if err := b.stopFunc(ctx); err != nil {
+			return err
+		}
+	}
 
 	// Wait for the background task to complete or context timeout
 	select {
