@@ -2,6 +2,8 @@ package lifecycle_test
 
 import (
 	"context"
+	"log/slog"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -35,9 +37,11 @@ func SetupDB(ctx inject.Context, lc *lifecycle.Lifecycle) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	lifecycle.Add(lc, lifecycle.NewFuncActor(nil, func(_ context.Context) error {
-		return db.Close()
-	}))
+	lc.Add(
+		lifecycle.NewFuncActor(nil, func(_ context.Context) error {
+			return db.Close()
+		}).WithName("db"),
+	)
 	return db, nil
 }
 
@@ -114,7 +118,10 @@ func TestCircularDependencyDetectionInLifecycle(t *testing.T) {
 }
 
 func TestLifecycle(t *testing.T) {
-	lc := lifecycle.New()
+	lc := lifecycle.New().
+		WithLogger(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})))
 
 	// Provide dependencies directly to Lifecycle
 	require.NoError(t, lc.Provide(

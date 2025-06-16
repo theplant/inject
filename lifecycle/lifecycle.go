@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,18 +32,18 @@ type Actor interface {
 	Stop(ctx context.Context) error
 }
 
-// Named defines an optional interface for actors that can provide a human-readable name.
-// This is useful for logging and debugging purposes.
-type Named interface {
-	GetName() string
-}
-
 // Service defines the interface for long-running services that can signal completion.
 // Examples: HTTP servers, gRPC servers, message queue consumers, background workers.
 type Service interface {
 	Actor
 	Done() <-chan struct{} // Signals when the service has completed or failed
 	Err() error            // Returns any error that caused the service to stop
+}
+
+// Named defines an optional interface for actors that can provide a human-readable name.
+// This is useful for logging and debugging purposes.
+type Named interface {
+	GetName() string
 }
 
 // Lifecycle manages the lifecycle of multiple actor instances.
@@ -57,8 +57,8 @@ type Lifecycle struct {
 	mu          sync.RWMutex
 	logger      *slog.Logger
 
-	// Track all types for auto-resolution using map for O(1) lookup
-	typesToResolve map[reflect.Type]bool
+	// Track all types for auto-resolution using slice for stable order
+	typesToResolve []reflect.Type
 }
 
 // New creates a new Lifecycle instance with embedded injector and default stop timeout.
@@ -68,7 +68,7 @@ func New() *Lifecycle {
 		Injector:       inj,
 		stopTimeout:    DefaultStopTimeout,
 		logger:         slog.Default(),
-		typesToResolve: make(map[reflect.Type]bool),
+		typesToResolve: make([]reflect.Type, 0),
 	}
 	_ = inj.Provide(func() *Lifecycle { return lc })
 	return lc
@@ -161,8 +161,10 @@ func (lc *Lifecycle) Provide(ctors ...any) error {
 				continue
 			}
 
-			// Add to typesToResolve map (automatically handles duplicates)
-			lc.typesToResolve[returnType] = true
+			// Add to typesToResolve slice with deduplication
+			if !slices.Contains(lc.typesToResolve, returnType) {
+				lc.typesToResolve = append(lc.typesToResolve, returnType)
+			}
 		}
 	}
 
@@ -172,10 +174,10 @@ func (lc *Lifecycle) Provide(ctors ...any) error {
 // ResolveAll automatically resolves all provided types using a clean child injector.
 func (lc *Lifecycle) ResolveAll(ctx context.Context) error {
 	lc.mu.Lock()
-	typesToResolve := maps.Clone(lc.typesToResolve)
+	typesToResolve := slices.Clone(lc.typesToResolve)
 	lc.mu.Unlock()
 
-	for ty := range typesToResolve {
+	for _, ty := range typesToResolve {
 		// Create a pointer to the type for resolution
 		ptr := reflect.New(ty)
 
@@ -234,17 +236,21 @@ func (lc *Lifecycle) Serve(ctx context.Context) error {
 		actorNames[i] = getActorName(actor, i)
 	}
 
-	logger.Info("Starting lifecycle", "actor_count", len(actors), "service_count", len(services))
+	logger.InfoContext(ctx, "Starting lifecycle", "actor_count", len(actors), "service_count", len(services))
 
 	// Start all actors with individual defer cleanup
 	for i, actor := range actors {
 		actorName := actorNames[i]
+		actorType := "Actor"
+		if _, ok := actor.(Service); ok {
+			actorType = "Service"
+		}
 
 		if err := actor.Start(ctx); err != nil {
-			logger.Error("Failed to start actor", "actor", actorName, "error", err)
+			logger.ErrorContext(ctx, fmt.Sprintf("Failed to start %s", strings.ToLower(actorType)), "actor", actorName, "error", err)
 			return err
 		}
-		logger.Debug("Actor started successfully", "actor", actorName)
+		logger.DebugContext(ctx, fmt.Sprintf("%s started successfully", actorType), "actor", actorName)
 
 		// Set up cleanup for this specific actor
 		defer func(actor Actor, actorName string) {
@@ -252,14 +258,14 @@ func (lc *Lifecycle) Serve(ctx context.Context) error {
 			defer cancel()
 
 			if err := actor.Stop(stopCtx); err != nil {
-				logger.Error("Failed to stop actor during cleanup", "actor", actorName, "error", err)
+				logger.ErrorContext(ctx, fmt.Sprintf("Failed to stop %s during cleanup", strings.ToLower(actorType)), "actor", actorName, "error", err)
 			} else {
-				logger.Debug("Actor stopped successfully", "actor", actorName)
+				logger.DebugContext(ctx, fmt.Sprintf("%s stopped successfully", actorType), "actor", actorName)
 			}
 		}(actor, actorName)
 	}
 
-	logger.Info("All actors started successfully", "actor_count", len(actors))
+	logger.InfoContext(ctx, "All actors started successfully", "actor_count", len(actors))
 
 	// Start monitoring goroutines for each service
 	g, gCtx := errgroup.WithContext(ctx)
@@ -275,35 +281,39 @@ func (lc *Lifecycle) Serve(ctx context.Context) error {
 				// Service completed, return its error (may be nil)
 				err := svc.Err()
 				if err != nil {
-					logger.Error("Service completed with error", "actor", actorName, "error", err)
+					logger.ErrorContext(gCtx, "Service completed with error", "actor", actorName, "error", err)
 				} else {
-					logger.Info("Service completed successfully", "actor", actorName)
+					logger.InfoContext(gCtx, "Service completed successfully", "actor", actorName)
 				}
 				return err
 			case <-gCtx.Done():
 				// Context cancelled or another service completed
-				logger.Debug("Service monitoring cancelled", "actor", actorName)
+				logger.DebugContext(gCtx, "Service monitoring cancelled", "actor", actorName)
 				return gCtx.Err()
 			}
 		})
 	}
 
-	logger.Info("Monitoring services", "service_count", len(services))
+	logger.InfoContext(ctx, "Monitoring services", "service_count", len(services))
 
 	// Wait for any service to complete or context cancellation
 	err := g.Wait()
 	if err == nil || errors.Is(err, context.Canceled) {
-		logger.Info("Lifecycle cancelled")
+		logger.InfoContext(ctx, "Lifecycle cancelled")
 		return nil
 	}
-	logger.Error("Lifecycle failed", "error", err)
+	logger.ErrorContext(ctx, "Lifecycle failed", "error", err)
 	return err
 }
 
 // getActorName returns a human-readable name for an actor, using Named interface if available
 func getActorName(actor Actor, index int) string {
+	var name string
 	if named, ok := actor.(Named); ok {
-		return named.GetName()
+		name = named.GetName()
 	}
-	return fmt.Sprintf("actor_%d", index)
+	if name == "" {
+		name = fmt.Sprintf("[%d](%T)", index, actor)
+	}
+	return name
 }

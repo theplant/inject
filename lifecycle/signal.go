@@ -27,7 +27,7 @@ func NewSignalService() *SignalService {
 			// Return context error for cancellation
 			return ctx.Err()
 		},
-	)
+	).WithName("signal")
 
 	// Wrap FuncService in SignalService
 	return &SignalService{FuncService: funcSvc}
