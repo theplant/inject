@@ -41,10 +41,15 @@ func SetupDB(ctx inject.Context, lc *lifecycle.Lifecycle) (*DB, error) {
 	return db, nil
 }
 
+type HTTPConfig struct {
+	Port int
+	DB   *DB `inject:""`
+}
+
 // HTTPService handles HTTP requests
 type HTTPService struct {
-	DB      *DB `inject:""`
-	running int32
+	*HTTPConfig `inject:""`
+	running     int32
 }
 
 func (h *HTTPService) Serve() error {
@@ -66,20 +71,25 @@ func (h *HTTPService) IsRunning() bool {
 	return atomic.LoadInt32(&h.running) == 1
 }
 
-func SetupHTTPService(lc *lifecycle.Lifecycle) *HTTPService {
-	svc := &HTTPService{}
-	lc.Add(lifecycle.NewFuncService(
-		func(_ context.Context) error {
-			return svc.Serve()
-		},
-		func(_ context.Context) error {
-			return svc.Close()
-		},
-	))
-	return svc
+var SetupHTTPService = []any{
+	func() *HTTPConfig {
+		return &HTTPConfig{Port: 8080}
+	},
+	func(lc *lifecycle.Lifecycle) *HTTPService {
+		svc := &HTTPService{}
+		lc.Add(lifecycle.NewFuncService(
+			func(_ context.Context) error {
+				return svc.Serve()
+			},
+			func(_ context.Context) error {
+				return svc.Close()
+			},
+		))
+		return svc
+	},
 }
 
-func TestLifeCycleWithInject(t *testing.T) {
+func TestLifecycle(t *testing.T) {
 	lc := lifecycle.New()
 
 	// Provide dependencies directly to Lifecycle
@@ -103,6 +113,7 @@ func TestLifeCycleWithInject(t *testing.T) {
 
 	// Verify dependency injection worked
 	lc.Invoke(func(db *DB, httpService *HTTPService, str string) {
+		require.Equal(t, 8080, httpService.Port)
 		require.Equal(t, db, httpService.DB)
 		require.False(t, httpService.IsRunning())
 

@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"os/signal"
 	"syscall"
 )
@@ -44,5 +45,9 @@ func (s *SignalService) Done() <-chan struct{} {
 
 // Err returns any error that occurred. For signal-based shutdown, this is typically nil.
 func (s *SignalService) Err() error {
-	return s.ctx.Err()
+	err := context.Cause(s.ctx)
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }

@@ -20,8 +20,8 @@ var (
 )
 
 type provider struct {
-	seq uint64
-	fn  any // value func
+	seq  uint64
+	ctor any // value func
 }
 
 type Injector struct {
@@ -59,8 +59,8 @@ var typeError = reflect.TypeOf((*error)(nil)).Elem()
 
 const invalidProvider = "Provide only accepts a function that returns at least one type except error"
 
-func (inj *Injector) provide(f any) (err error) {
-	rv := reflect.ValueOf(f)
+func (inj *Injector) provide(ctor any) (err error) {
+	rv := reflect.ValueOf(ctor)
 	rt := rv.Type()
 	if rt.Kind() != reflect.Func {
 		panic(invalidProvider)
@@ -84,8 +84,8 @@ func (inj *Injector) provide(f any) (err error) {
 	}
 
 	provider := &provider{
-		seq: inj.maxProviderSeq + 1,
-		fn:  f,
+		seq:  inj.maxProviderSeq + 1,
+		ctor: ctor,
 	}
 	for i := 0; i < numOut; i++ {
 		outType := rt.Out(i)
@@ -189,7 +189,7 @@ func (inj *Injector) resolve(ctx Context, rt reflect.Type) (reflect.Value, error
 				return nil, nil
 			}
 
-			results, err := inj.invoke(ctx, provider.fn)
+			results, err := inj.invoke(ctx, provider.ctor)
 			if err != nil {
 				return nil, err
 			}
@@ -263,9 +263,35 @@ func (inj *Injector) applyStruct(ctx Context, rv reflect.Value) error {
 	return nil
 }
 
-func (inj *Injector) Provide(fs ...any) error {
-	for _, f := range fs {
-		if err := inj.provide(f); err != nil {
+// flat recursively flattens any arrays/slices found in the arguments.
+// This allows grouping related constructors together for better organization.
+func flat(vs ...any) []any {
+	var result []any
+
+	for _, f := range vs {
+		rv := reflect.ValueOf(f)
+
+		// If it's a slice or array, recursively flatten it
+		if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
+			// Convert slice/array elements to []any
+			subItems := make([]any, rv.Len())
+			for i := 0; i < rv.Len(); i++ {
+				subItems[i] = rv.Index(i).Interface()
+			}
+			// Recursively flatten the sub-items
+			result = append(result, flat(subItems...)...)
+		} else {
+			// Regular constructor function, add directly
+			result = append(result, f)
+		}
+	}
+
+	return result
+}
+
+func (inj *Injector) Provide(ctors ...any) error {
+	for _, ctor := range flat(ctors...) {
+		if err := inj.provide(ctor); err != nil {
 			return err
 		}
 	}

@@ -662,3 +662,101 @@ func TestContextNotAllowed(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "works", result)
 }
+
+func TestProvideArrayFlattening(t *testing.T) {
+	inj := New()
+
+	// Group related HTTP constructors
+	httpGroup := []any{
+		func() string { return "http-config" },
+		func() int { return 8080 },
+	}
+
+	// Group related DB constructors
+	dbGroup := []any{
+		func() bool { return true },
+		func() float64 { return 3.14 },
+	}
+
+	// Provide with mixed individual and grouped constructors
+	err := inj.Provide(
+		func() byte { return 42 },  // Individual constructor
+		httpGroup,                  // Array of constructors
+		dbGroup,                    // Another array
+		func() rune { return 'A' }, // Another individual constructor
+	)
+
+	require.NoError(t, err)
+
+	// Verify all types were provided correctly
+	var str string
+	var port int
+	var enabled bool
+	var pi float64
+	var b byte
+	var r rune
+
+	err = inj.Resolve(&str, &port, &enabled, &pi, &b, &r)
+	require.NoError(t, err)
+
+	require.Equal(t, "http-config", str)
+	require.Equal(t, 8080, port)
+	require.True(t, enabled)
+	require.Equal(t, 3.14, pi)
+	require.Equal(t, byte(42), b)
+	require.Equal(t, 'A', r)
+}
+
+func TestProvideNestedArrayFlattening(t *testing.T) {
+	inj := New()
+
+	// Test nested arrays (array containing arrays)
+	nestedGroup := []any{
+		[]any{
+			func() string { return "nested-1" },
+			func() int { return 100 },
+		},
+		[]any{
+			func() bool { return false },
+			func() float64 { return 2.71 },
+		},
+	}
+
+	err := inj.Provide(nestedGroup)
+	require.NoError(t, err)
+
+	// Verify nested arrays were flattened correctly
+	var str string
+	var num int
+	var flag bool
+	var val float64
+
+	err = inj.Resolve(&str, &num, &flag, &val)
+	require.NoError(t, err)
+
+	require.Equal(t, "nested-1", str)
+	require.Equal(t, 100, num)
+	require.False(t, flag)
+	require.Equal(t, 2.71, val)
+}
+
+func TestProvideEmptyArrayHandling(t *testing.T) {
+	inj := New()
+
+	// Test with empty arrays
+	err := inj.Provide(
+		func() string { return "test" },
+		[]any{}, // Empty array should be handled gracefully
+		func() int { return 42 },
+	)
+
+	require.NoError(t, err)
+
+	var str string
+	var num int
+	err = inj.Resolve(&str, &num)
+	require.NoError(t, err)
+
+	require.Equal(t, "test", str)
+	require.Equal(t, 42, num)
+}
