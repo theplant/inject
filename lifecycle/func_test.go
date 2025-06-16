@@ -96,11 +96,10 @@ func TestFuncService_BasicOperation(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 			return nil
 		},
-		func(ctx context.Context) error {
-			stopExecuted <- true
-			return nil
-		},
-	)
+	).WithStopFunc(func(ctx context.Context) error {
+		stopExecuted <- true
+		return nil
+	})
 
 	ctx := context.Background()
 
@@ -133,7 +132,6 @@ func TestFuncService_TaskError(t *testing.T) {
 		func(ctx context.Context) error {
 			return expectedErr
 		},
-		nil,
 	)
 
 	ctx := context.Background()
@@ -159,15 +157,14 @@ func TestFuncService_StopBehavior(t *testing.T) {
 				return ctx.Err()
 			}
 		},
-		func(ctx context.Context) error {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case stopCalled <- true:
-				return nil
-			}
-		},
-	)
+	).WithStopFunc(func(ctx context.Context) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case stopCalled <- true:
+			return nil
+		}
+	})
 
 	ctx := context.Background()
 	require.NoError(t, service.Start(ctx))
@@ -215,16 +212,15 @@ func TestFuncService_StopTimeout(t *testing.T) {
 			<-ctx.Done()
 			return ctx.Err()
 		},
-		func(ctx context.Context) error {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(100 * time.Millisecond):
-				stopCalled <- true
-				return nil
-			}
-		},
-	)
+	).WithStopFunc(func(ctx context.Context) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+			stopCalled <- true
+			return nil
+		}
+	})
 
 	ctx := context.Background()
 	require.NoError(t, service.Start(ctx))
@@ -254,10 +250,9 @@ func TestFuncService_StopFunctionError(t *testing.T) {
 		func(ctx context.Context) error {
 			return nil
 		},
-		func(ctx context.Context) error {
-			return stopErr
-		},
-	)
+	).WithStopFunc(func(ctx context.Context) error {
+		return stopErr
+	})
 
 	ctx := context.Background()
 	require.NoError(t, service.Start(ctx))
@@ -275,6 +270,6 @@ func TestFuncService_StopFunctionError(t *testing.T) {
 
 func TestFuncService_PanicOnNilTaskFunc(t *testing.T) {
 	require.Panics(t, func() {
-		lifecycle.NewFuncService(nil, nil)
+		lifecycle.NewFuncService(nil)
 	})
 }

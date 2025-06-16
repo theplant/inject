@@ -12,6 +12,7 @@ import (
 type FuncActor struct {
 	startFunc func(ctx context.Context) error
 	stopFunc  func(ctx context.Context) error
+	name      string
 }
 
 // NewFuncActor creates a new FuncActor with the provided start and stop functions.
@@ -20,6 +21,17 @@ func NewFuncActor(start, stop func(ctx context.Context) error) *FuncActor {
 		startFunc: start,
 		stopFunc:  stop,
 	}
+}
+
+// WithName sets the name of the actor.
+func (f *FuncActor) WithName(name string) *FuncActor {
+	f.name = name
+	return f
+}
+
+// GetName returns the name of the actor.
+func (f *FuncActor) GetName() string {
+	return f.name
 }
 
 // Start calls the wrapped start function.
@@ -43,6 +55,7 @@ func (f *FuncActor) Stop(ctx context.Context) error {
 type FuncService struct {
 	taskFunc  func(ctx context.Context) error
 	stopFunc  func(ctx context.Context) error
+	name      string
 	ctx       context.Context
 	cancel    context.CancelCauseFunc
 	doneC     chan struct{}
@@ -51,18 +64,35 @@ type FuncService struct {
 }
 
 // NewFuncService creates a new FuncService with the provided task function.
-func NewFuncService(taskFunc, stopFunc func(ctx context.Context) error) *FuncService {
+func NewFuncService(taskFunc func(ctx context.Context) error) *FuncService {
 	if taskFunc == nil {
 		panic("taskFunc is required")
 	}
 	ctx, cancel := context.WithCancelCause(context.Background())
 	return &FuncService{
 		taskFunc: taskFunc,
-		stopFunc: stopFunc,
+		stopFunc: nil,
 		ctx:      ctx,
 		cancel:   cancel,
 		doneC:    make(chan struct{}),
 	}
+}
+
+// WithStopFunc sets the stop function for the service.
+func (b *FuncService) WithStopFunc(stopFunc func(ctx context.Context) error) *FuncService {
+	b.stopFunc = stopFunc
+	return b
+}
+
+// WithName sets the name of the service.
+func (b *FuncService) WithName(name string) *FuncService {
+	b.name = name
+	return b
+}
+
+// GetName returns the name of the service.
+func (b *FuncService) GetName() string {
+	return b.name
 }
 
 // Start launches the background task in a separate goroutine.

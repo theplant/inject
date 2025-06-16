@@ -2,52 +2,39 @@ package lifecycle
 
 import (
 	"context"
-	"errors"
 	"os/signal"
 	"syscall"
 )
 
-// SignalService implements Service interface to handle OS signals for graceful shutdown.
-// It listens for SIGINT and SIGTERM signals and signals completion when received.
+// SignalService is a specialized service for handling OS signals.
+// This provides a distinct type for dependency injection while reusing FuncService functionality.
 type SignalService struct {
-	ctx    context.Context
-	cancel context.CancelFunc
+	*FuncService
 }
 
 // NewSignalService creates a new SignalService that listens for SIGINT and SIGTERM.
 func NewSignalService() *SignalService {
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	return &SignalService{
-		ctx:    ctx,
-		cancel: cancel,
-	}
+	funcSvc := NewFuncService(
+		func(ctx context.Context) error {
+			// Wait for signals using signal.NotifyContext
+			signalCtx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+			defer cancel()
+
+			// Block until signal is received or context is cancelled
+			<-signalCtx.Done()
+
+			// Return nil for graceful shutdown (signal received)
+			// Return context error for cancellation
+			return ctx.Err()
+		},
+	)
+
+	// Wrap FuncService in SignalService
+	return &SignalService{FuncService: funcSvc}
 }
 
-func SetupSignalService(lc *Lifecycle) *SignalService {
+// SetupSignal creates and registers a signal handling service that listens for SIGINT and SIGTERM.
+// Returns a SignalService that will complete when a signal is received.
+func SetupSignal(lc *Lifecycle) *SignalService {
 	return Add(lc, NewSignalService())
-}
-
-// Start is a no-op since signal listening begins at construction.
-func (s *SignalService) Start(_ context.Context) error {
-	return nil
-}
-
-// Stop stops the signal listener.
-func (s *SignalService) Stop(_ context.Context) error {
-	s.cancel()
-	return nil
-}
-
-// Done returns a channel that is closed when a signal is received.
-func (s *SignalService) Done() <-chan struct{} {
-	return s.ctx.Done()
-}
-
-// Err returns any error that occurred. For signal-based shutdown, this is typically nil.
-func (s *SignalService) Err() error {
-	err := context.Cause(s.ctx)
-	if errors.Is(err, context.Canceled) {
-		return nil
-	}
-	return err
 }

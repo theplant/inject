@@ -77,50 +77,17 @@ var SetupHTTPService = []any{
 	},
 	func(lc *lifecycle.Lifecycle) *HTTPService {
 		svc := &HTTPService{}
-		lc.Add(lifecycle.NewFuncService(
-			func(_ context.Context) error {
-				return svc.Serve()
-			},
-			func(_ context.Context) error {
+		lc.Add(
+			lifecycle.NewFuncService(
+				func(_ context.Context) error {
+					return svc.Serve()
+				},
+			).WithStopFunc(func(_ context.Context) error {
 				return svc.Close()
-			},
-		))
+			}).WithName("http"),
+		)
 		return svc
 	},
-}
-
-func TestLifecycle(t *testing.T) {
-	lc := lifecycle.New()
-
-	// Provide dependencies directly to Lifecycle
-	require.NoError(t, lc.Provide(
-		// Signal service (Service)
-		lifecycle.SetupSignalService,
-		// Database dependency (Actor) - can receive context during construction
-		SetupDB,
-		// HTTP service (Service)
-		SetupHTTPService,
-	))
-
-	// Provide context for manual resolution
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	ctx = context.WithValue(ctx, ctxKeyPayload{}, "testDBPayload")
-
-	// Test with timeout - context will be automatically provided to constructors
-	err := lc.Serve(ctx)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-
-	// Verify dependency injection worked
-	lc.Invoke(func(db *DB, httpService *HTTPService, str string) {
-		require.Equal(t, 8080, httpService.Port)
-		require.Equal(t, db, httpService.DB)
-		require.False(t, httpService.IsRunning())
-
-		require.Equal(t, "test_db", db.Name)
-		require.Equal(t, "testDBPayload", db.Payload)
-		require.True(t, db.closed)
-	})
 }
 
 func TestCircularDependencyDetectionInLifecycle(t *testing.T) {
@@ -144,4 +111,39 @@ func TestCircularDependencyDetectionInLifecycle(t *testing.T) {
 	// Should detect circular dependency at provide time, not runtime
 	require.ErrorIs(t, err, inject.ErrCircularDependency)
 	require.Contains(t, err.Error(), "*lifecycle_test.Config -> *lifecycle_test.Config@*lifecycle_test.Service")
+}
+
+func TestLifecycle(t *testing.T) {
+	lc := lifecycle.New()
+
+	// Provide dependencies directly to Lifecycle
+	require.NoError(t, lc.Provide(
+		// Signal service (Service)
+		lifecycle.SetupSignal,
+		// Database dependency (Actor) - can receive context during construction
+		SetupDB,
+		// HTTP service (Service)
+		SetupHTTPService,
+	))
+
+	// Provide context for manual resolution
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	ctx = context.WithValue(ctx, ctxKeyPayload{}, "testDBPayload")
+
+	// Test with timeout - context will be automatically provided to constructors
+	err := lc.Serve(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	// Verify dependency injection worked
+	_, err = lc.Invoke(func(db *DB, httpService *HTTPService) {
+		require.Equal(t, 8080, httpService.Port)
+		require.Equal(t, db, httpService.DB)
+		require.False(t, httpService.IsRunning())
+
+		require.Equal(t, "test_db", db.Name)
+		require.Equal(t, "testDBPayload", db.Payload)
+		require.True(t, db.closed)
+	})
+	require.NoError(t, err)
 }
