@@ -162,7 +162,7 @@ func getStructFieldDependencies(t reflect.Type) ([]reflect.Type, error) {
 		if !IsTypeAllowed(field.Type) {
 			return nil, fmt.Errorf("%w: %s", ErrTypeNotAllowed, field.Type.String())
 		}
-		if _, ok := field.Tag.Lookup(tagName); ok {
+		if _, ok := field.Tag.Lookup(TagName); ok {
 			if !seen[field.Type] {
 				deps = append(deps, field.Type)
 				seen[field.Type] = true

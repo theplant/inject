@@ -49,13 +49,13 @@ type HTTPConfig struct {
 // HTTPService handles HTTP requests
 type HTTPService struct {
 	*HTTPConfig `inject:""`
-	running     int32
+	running     atomic.Bool
 }
 
 func (h *HTTPService) Serve() error {
-	atomic.StoreInt32(&h.running, 1)
+	h.running.Store(true)
 	for {
-		if atomic.LoadInt32(&h.running) == 0 {
+		if !h.IsRunning() {
 			return nil
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -63,12 +63,12 @@ func (h *HTTPService) Serve() error {
 }
 
 func (h *HTTPService) Close() error {
-	atomic.StoreInt32(&h.running, 0)
+	h.running.Store(false)
 	return nil
 }
 
 func (h *HTTPService) IsRunning() bool {
-	return atomic.LoadInt32(&h.running) == 1
+	return h.running.Load()
 }
 
 var SetupHTTPService = []any{

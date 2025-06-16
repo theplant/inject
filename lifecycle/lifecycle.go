@@ -3,6 +3,9 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
+	"maps"
 	"reflect"
 	"slices"
 	"sync"
@@ -13,23 +16,26 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// DefaultCleanupTimeout is the default timeout for cleanup operations.
-var DefaultCleanupTimeout = 30 * time.Second
+// DefaultStopTimeout is the default timeout for stop operations.
+var DefaultStopTimeout = 30 * time.Second
 
-// ErrAlreadyStarted is returned when Start is called more than once.
-var ErrAlreadyStarted = errors.New("lifecycle can only be started once")
+// ErrAlreadyServed is returned when Serve is called more than once.
+var ErrAlreadyServed = errors.New("lifecycle can only be served once")
 
-// ErrNotStarted is returned when Stop is called before Start.
-var ErrNotStarted = errors.New("lifecycle must be started before stopping")
-
-// ErrNoLongRunningServices is returned when no long-running services are registered.
-var ErrNoLongRunningServices = errors.New("no long-running services to monitor")
+// ErrNoServices is returned when no long-running services are registered.
+var ErrNoServices = errors.New("no long-running services to serve")
 
 // Actor defines the interface for simple actors that only need start/stop operations.
 // Examples: configuration loaders, database migrations, one-time setup tasks.
 type Actor interface {
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
+}
+
+// Named defines an optional interface for actors that can provide a human-readable name.
+// This is useful for logging and debugging purposes.
+type Named interface {
+	GetName() string
 }
 
 // Service defines the interface for long-running services that can signal completion.
@@ -45,32 +51,44 @@ type Service interface {
 type Lifecycle struct {
 	*inject.Injector // Embedded injector for dependency management
 
-	actors         []Actor
-	cleanupTimeout time.Duration
-	started        int32 // atomic flag: 0 = not started, 1 = started
-	mu             sync.RWMutex
+	actors      []Actor
+	stopTimeout time.Duration
+	served      atomic.Bool
+	mu          sync.RWMutex
+	logger      *slog.Logger
 
-	// Track all types for auto-resolution
-	typesToResolve []reflect.Type
+	// Track all types for auto-resolution using map for O(1) lookup
+	typesToResolve map[reflect.Type]bool
 }
 
-// New creates a new Lifecycle instance with embedded injector and default cleanup timeout.
+// New creates a new Lifecycle instance with embedded injector and default stop timeout.
 func New() *Lifecycle {
 	inj := inject.New()
 	lc := &Lifecycle{
 		Injector:       inj,
-		cleanupTimeout: DefaultCleanupTimeout,
+		stopTimeout:    DefaultStopTimeout,
+		logger:         slog.Default(),
+		typesToResolve: make(map[reflect.Type]bool),
 	}
-	inj.Provide(func() *Lifecycle { return lc })
+	_ = inj.Provide(func() *Lifecycle { return lc })
 	return lc
 }
 
-// WithCleanupTimeout sets the timeout for cleanup operations and returns the Lifecycle instance.
+// WithStopTimeout sets the timeout for stop operations and returns the Lifecycle instance.
 // This allows for method chaining during initialization.
-func (lc *Lifecycle) WithCleanupTimeout(timeout time.Duration) *Lifecycle {
+func (lc *Lifecycle) WithStopTimeout(timeout time.Duration) *Lifecycle {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	lc.cleanupTimeout = timeout
+	lc.stopTimeout = timeout
+	return lc
+}
+
+// WithLogger sets the logger for the lifecycle and returns the Lifecycle instance.
+// This allows for method chaining during initialization.
+func (lc *Lifecycle) WithLogger(logger *slog.Logger) *Lifecycle {
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	lc.logger = logger
 	return lc
 }
 
@@ -113,142 +131,13 @@ func LazyAddE[A Actor](lc *Lifecycle, f func() (A, error)) func() (A, error) {
 	}
 }
 
-// Start launches all registered actors in the order they were added.
-// Returns immediately on the first error encountered, without starting remaining actors.
-// Can only be called once; subsequent calls will return an error.
-// The ctx parameter is only used for the startup process itself, not for long-running operations.
-func (lc *Lifecycle) Start(ctx context.Context) error {
-	if !atomic.CompareAndSwapInt32(&lc.started, 0, 1) {
-		return ErrAlreadyStarted
-	}
-
-	lc.mu.RLock()
-	actors := slices.Clone(lc.actors)
-	lc.mu.RUnlock()
-
-	for _, actor := range actors {
-		if err := actor.Start(ctx); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// Stop gracefully stops all registered actors in reverse order (LIFO).
-// This ensures that dependencies are stopped in the correct order, mirroring their startup sequence.
-// Continues stopping all actors even if some fail, and returns a joined error of all failures.
-// The ctx parameter is only used for the shutdown process itself, not for long-running operations.
-func (lc *Lifecycle) Stop(ctx context.Context) error {
-	if atomic.LoadInt32(&lc.started) == 0 {
-		return ErrNotStarted
-	}
-
-	lc.mu.RLock()
-	actors := slices.Clone(lc.actors)
-	lc.mu.RUnlock()
-
-	var errs []error
-	for i := len(actors) - 1; i >= 0; i-- {
-		if err := actors[i].Stop(ctx); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// Wait monitors all long-running services and waits for any of them to complete.
-// For each Service (actors that implement Done() and Err()), it starts a monitoring goroutine.
-// Returns when:
-// - Any service signals completion via Done() (returns that service's Err())
-// - The provided context is cancelled (returns context error)
-// - An error occurs in the monitoring process
-//
-// If no long-running services are registered, returns an error immediately.
-// The ctx parameter controls the long-running monitoring process and can be used to cancel waiting.
-func (lc *Lifecycle) Wait(ctx context.Context) error {
-	// Collect all long-running services
-	lc.mu.RLock()
-	var services []Service
-	for _, actor := range lc.actors {
-		if svc, ok := actor.(Service); ok {
-			services = append(services, svc)
-		}
-	}
-	lc.mu.RUnlock()
-
-	// Require at least one long-running service to monitor
-	if len(services) == 0 {
-		return ErrNoLongRunningServices
-	}
-
-	// Start monitoring goroutines for each service
-	g, gCtx := errgroup.WithContext(ctx)
-	for _, svc := range services {
-		svc := svc // capture loop variable
-		g.Go(func() error {
-			select {
-			case <-svc.Done():
-				// Service completed, return its error (may be nil)
-				return svc.Err()
-			case <-gCtx.Done():
-				// Context cancelled or another service completed
-				return gCtx.Err()
-			}
-		})
-	}
-
-	// Wait for any service to complete or context cancellation
-	err := g.Wait()
-	if errors.Is(err, context.Canceled) {
-		return nil
-	}
-	return err
-}
-
-// Serve provides a complete lifecycle management solution.
-// It automatically resolves all provided types, starts all actors, monitors long-running services, and ensures proper cleanup.
-//
-// Process:
-// 1. Automatically resolves all provided types with context support
-// 2. Starts all registered actors via Start()
-// 3. Sets up automatic cleanup via defer (using background context with timeout)
-// 4. Monitors long-running services via Wait()
-// 5. Returns when any service completes or context is cancelled
-//
-// The cleanup is guaranteed to run even if Wait() returns an error,
-// using a separate background context to avoid cancellation issues.
-// The ctx parameter controls the long-running monitoring process and can be used to cancel the entire operation.
-func (lc *Lifecycle) Serve(ctx context.Context) error {
-	// Automatically resolve all provided types with context
-	if err := lc.ResolveAll(ctx); err != nil {
-		return err
-	}
-
-	// Start all actors
-	if err := lc.Start(ctx); err != nil {
-		return err
-	}
-
-	// Ensure cleanup on exit using background context to avoid cancellation
-	defer func() {
-		lc.mu.RLock()
-		timeout := lc.cleanupTimeout
-		lc.mu.RUnlock()
-
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-		lc.Stop(cleanupCtx)
-	}()
-
-	// Monitor long-running services
-	return lc.Wait(ctx)
-}
-
-var typeError = reflect.TypeOf((*error)(nil)).Elem()
-
 // Provide registers constructors and tracks all non-error return types for auto-resolution.
 // This overrides the embedded Injector's Provide method to enable auto-resolution of types.
 func (lc *Lifecycle) Provide(ctors ...any) error {
+	if lc.served.Load() {
+		return ErrAlreadyServed
+	}
+
 	ctors = inject.Flatten(ctors...)
 
 	// First, register with the embedded injector
@@ -267,13 +156,13 @@ func (lc *Lifecycle) Provide(ctors ...any) error {
 		for i := 0; i < ctorType.NumOut(); i++ {
 			returnType := ctorType.Out(i)
 
-			// Skip error type
-			if returnType == typeError {
+			// Use inject.IsTypeAllowed instead of just checking error type
+			if !inject.IsTypeAllowed(returnType) {
 				continue
 			}
 
-			// Store all non-error types for later resolution
-			lc.typesToResolve = append(lc.typesToResolve, returnType)
+			// Add to typesToResolve map (automatically handles duplicates)
+			lc.typesToResolve[returnType] = true
 		}
 	}
 
@@ -283,12 +172,10 @@ func (lc *Lifecycle) Provide(ctors ...any) error {
 // ResolveAll automatically resolves all provided types using a clean child injector.
 func (lc *Lifecycle) ResolveAll(ctx context.Context) error {
 	lc.mu.Lock()
-	typesToResolve := slices.Clone(lc.typesToResolve)
+	typesToResolve := maps.Clone(lc.typesToResolve)
 	lc.mu.Unlock()
 
-	slices.Reverse(typesToResolve)
-
-	for _, ty := range typesToResolve {
+	for ty := range typesToResolve {
 		// Create a pointer to the type for resolution
 		ptr := reflect.New(ty)
 
@@ -299,4 +186,124 @@ func (lc *Lifecycle) ResolveAll(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// Serve provides a complete lifecycle management solution.
+// It automatically resolves all provided types, starts all actors, monitors long-running services, and ensures proper cleanup.
+//
+// Process:
+// 1. Automatically resolves all provided types with context support
+// 2. Checks if there are long-running services to monitor
+// 3. Starts all registered actors via internal start logic
+// 4. Sets up automatic cleanup via defer for each started actor
+// 5. Monitors long-running services
+// 6. Returns when any service completes or context is cancelled
+//
+// The cleanup is guaranteed to run even if any step fails,
+// using defer to ensure each started actor is properly stopped.
+// The ctx parameter controls the long-running monitoring process and can be used to cancel the entire operation.
+func (lc *Lifecycle) Serve(ctx context.Context) error {
+	if !lc.served.CompareAndSwap(false, true) {
+		return ErrAlreadyServed
+	}
+
+	// Automatically resolve all provided types with context
+	if err := lc.ResolveAll(ctx); err != nil {
+		return err
+	}
+
+	lc.mu.RLock()
+	actors := slices.Clone(lc.actors)
+	logger := lc.logger
+	stopTimeout := lc.stopTimeout
+	lc.mu.RUnlock()
+
+	// Check for long-running services before starting actors
+	var services []Service
+	for _, actor := range actors {
+		if svc, ok := actor.(Service); ok {
+			services = append(services, svc)
+		}
+	}
+	if len(services) == 0 {
+		return ErrNoServices
+	}
+
+	actorNames := make([]string, len(actors))
+	for i, actor := range actors {
+		actorNames[i] = getActorName(actor, i)
+	}
+
+	logger.Info("Starting lifecycle", "actor_count", len(actors), "service_count", len(services))
+
+	// Start all actors with individual defer cleanup
+	for i, actor := range actors {
+		actorName := actorNames[i]
+
+		if err := actor.Start(ctx); err != nil {
+			logger.Error("Failed to start actor", "actor", actorName, "error", err)
+			return err
+		}
+		logger.Debug("Actor started successfully", "actor", actorName)
+
+		// Set up cleanup for this specific actor
+		defer func(actor Actor, actorName string) {
+			stopCtx, cancel := context.WithTimeout(context.Background(), stopTimeout)
+			defer cancel()
+
+			if err := actor.Stop(stopCtx); err != nil {
+				logger.Error("Failed to stop actor during cleanup", "actor", actorName, "error", err)
+			} else {
+				logger.Debug("Actor stopped successfully", "actor", actorName)
+			}
+		}(actor, actorName)
+	}
+
+	logger.Info("All actors started successfully", "actor_count", len(actors))
+
+	// Start monitoring goroutines for each service
+	g, gCtx := errgroup.WithContext(ctx)
+	for i, actor := range actors {
+		svc, ok := actor.(Service)
+		if !ok {
+			continue
+		}
+		actorName := actorNames[i]
+		g.Go(func() error {
+			select {
+			case <-svc.Done():
+				// Service completed, return its error (may be nil)
+				err := svc.Err()
+				if err != nil {
+					logger.Error("Service completed with error", "actor", actorName, "error", err)
+				} else {
+					logger.Info("Service completed successfully", "actor", actorName)
+				}
+				return err
+			case <-gCtx.Done():
+				// Context cancelled or another service completed
+				logger.Debug("Service monitoring cancelled", "actor", actorName)
+				return gCtx.Err()
+			}
+		})
+	}
+
+	logger.Info("Monitoring services", "service_count", len(services))
+
+	// Wait for any service to complete or context cancellation
+	err := g.Wait()
+	if err == nil || errors.Is(err, context.Canceled) {
+		logger.Info("Lifecycle cancelled")
+		return nil
+	}
+	logger.Error("Lifecycle failed", "error", err)
+	return err
+}
+
+// getActorName returns a human-readable name for an actor, using Named interface if available
+func getActorName(actor Actor, index int) string {
+	if named, ok := actor.(Named); ok {
+		return named.GetName()
+	}
+	return fmt.Sprintf("actor_%d", index)
 }

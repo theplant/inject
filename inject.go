@@ -234,9 +234,9 @@ func (inj *Injector) ApplyWithContext(ctx Context, val any) error {
 	return inj.applyStruct(ctx, rv)
 }
 
-const (
-	tagName     = "inject"
-	tagOptional = "optional"
+var (
+	TagName          = "inject"
+	TagValueOptional = "optional"
 )
 
 func (inj *Injector) applyStruct(ctx Context, rv reflect.Value) error {
@@ -244,14 +244,14 @@ func (inj *Injector) applyStruct(ctx Context, rv reflect.Value) error {
 
 	for i := 0; i < rv.NumField(); i++ {
 		structField := rt.Field(i)
-		if tag, ok := structField.Tag.Lookup(tagName); ok {
+		if tag, ok := structField.Tag.Lookup(TagName); ok {
 			if !IsTypeAllowed(structField.Type) {
 				return fmt.Errorf("%w: %s", ErrTypeNotAllowed, structField.Type.String())
 			}
 
 			dep, err := inj.resolve(ctx, structField.Type)
 			if err != nil {
-				if errors.Is(err, ErrTypeNotProvided) && strings.TrimSpace(tag) == tagOptional {
+				if errors.Is(err, ErrTypeNotProvided) && strings.TrimSpace(tag) == TagValueOptional {
 					continue
 				}
 				return err

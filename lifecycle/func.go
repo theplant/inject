@@ -3,6 +3,8 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 )
 
 // FuncActor wraps start and stop functions into an Actor implementation.
@@ -39,11 +41,13 @@ func (f *FuncActor) Stop(ctx context.Context) error {
 // FuncService runs a function in a background goroutine and implements Service interface.
 // Useful for long-running background tasks that need to be monitored.
 type FuncService struct {
-	taskFunc func(ctx context.Context) error
-	stopFunc func(ctx context.Context) error
-	ctx      context.Context
-	cancel   context.CancelCauseFunc
-	doneC    chan struct{}
+	taskFunc  func(ctx context.Context) error
+	stopFunc  func(ctx context.Context) error
+	ctx       context.Context
+	cancel    context.CancelCauseFunc
+	doneC     chan struct{}
+	startOnce sync.Once
+	started   atomic.Bool
 }
 
 // NewFuncService creates a new FuncService with the provided task function.
@@ -63,12 +67,15 @@ func NewFuncService(taskFunc, stopFunc func(ctx context.Context) error) *FuncSer
 
 // Start launches the background task in a separate goroutine.
 func (b *FuncService) Start(_ context.Context) error {
-	go func() (xerr error) {
-		defer close(b.doneC)
-		defer func() { b.cancel(xerr) }()
-		return b.taskFunc(b.ctx)
-	}()
+	b.startOnce.Do(func() {
+		b.started.Store(true)
 
+		go func() (xerr error) {
+			defer close(b.doneC)
+			defer func() { b.cancel(xerr) }()
+			return b.taskFunc(b.ctx)
+		}()
+	})
 	return nil
 }
 
@@ -103,4 +110,9 @@ func (b *FuncService) Err() error {
 		return nil
 	}
 	return err
+}
+
+// IsStarted returns whether the service has been started
+func (b *FuncService) IsStarted() bool {
+	return b.started.Load()
 }
