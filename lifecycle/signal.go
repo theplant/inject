@@ -2,9 +2,12 @@ package lifecycle
 
 import (
 	"context"
+	"os"
 	"os/signal"
 	"syscall"
 )
+
+var DefaultSignals = []os.Signal{syscall.SIGINT, syscall.SIGTERM}
 
 // SignalService is a specialized service for handling OS signals.
 // This provides a distinct type for dependency injection while reusing FuncService functionality.
@@ -13,11 +16,15 @@ type SignalService struct {
 }
 
 // NewSignalService creates a new SignalService that listens for SIGINT and SIGTERM.
-func NewSignalService() *SignalService {
+func NewSignalService(signals ...os.Signal) *SignalService {
+	if len(signals) == 0 {
+		signals = DefaultSignals
+	}
+
 	funcSvc := NewFuncService(
 		func(ctx context.Context) error {
 			// Wait for signals using signal.NotifyContext
-			signalCtx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+			signalCtx, cancel := signal.NotifyContext(ctx, signals...)
 			defer cancel()
 
 			// Block until signal is received or context is cancelled
@@ -37,4 +44,13 @@ func NewSignalService() *SignalService {
 // Returns a SignalService that will complete when a signal is received.
 func SetupSignal(lc *Lifecycle) *SignalService {
 	return Add(lc, NewSignalService())
+}
+
+// SetupSignalWith returns a setup function that creates and registers a signal handling service
+// that listens for the specified signals. If no signals are provided, it defaults to SIGINT and SIGTERM.
+// The returned function can be used with dependency injection or called directly with a Lifecycle instance.
+func SetupSignalWith(signals ...os.Signal) func(lc *Lifecycle) *SignalService {
+	return func(lc *Lifecycle) *SignalService {
+		return Add(lc, NewSignalService(signals...))
+	}
 }
