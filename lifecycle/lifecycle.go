@@ -19,8 +19,8 @@ import (
 // DefaultStopTimeout is the default timeout for stop operations.
 var DefaultStopTimeout = 30 * time.Second
 
-// ErrAlreadyServed is returned when Serve is called more than once.
-var ErrAlreadyServed = errors.New("lifecycle can only be served once")
+// ErrServed is returned when Serve is called.
+var ErrServed = errors.New("lifecycle already served")
 
 // ErrNoServices is returned when no long-running services are registered.
 var ErrNoServices = errors.New("no long-running services to serve")
@@ -135,7 +135,7 @@ func LazyAddE[A Actor](lc *Lifecycle, f func() (A, error)) func() (A, error) {
 // This overrides the embedded Injector's Provide method to enable auto-resolution of types.
 func (lc *Lifecycle) Provide(ctors ...any) error {
 	if lc.served.Load() {
-		return ErrAlreadyServed
+		return ErrServed
 	}
 
 	ctors = inject.Flatten(ctors...)
@@ -206,7 +206,7 @@ func (lc *Lifecycle) ResolveAll(ctx context.Context) error {
 // The ctx parameter controls the long-running monitoring process and can be used to cancel the entire operation.
 func (lc *Lifecycle) Serve(ctx context.Context) error {
 	if !lc.served.CompareAndSwap(false, true) {
-		return ErrAlreadyServed
+		return ErrServed
 	}
 
 	// Automatically resolve all provided types with context
