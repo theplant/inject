@@ -25,7 +25,7 @@ func NewSignalService() *SignalService {
 
 			// Return nil for graceful shutdown (signal received)
 			// Return context error for cancellation
-			return ctx.Err()
+			return context.Cause(ctx)
 		},
 	).WithName("signal")
 

@@ -25,6 +25,17 @@ var ErrServed = errors.New("lifecycle already served")
 // ErrNoServices is returned when no long-running services are registered.
 var ErrNoServices = errors.New("no long-running services to serve")
 
+type ctxKeyStopCause struct{}
+
+func withStopCause(ctx context.Context, cause error) context.Context {
+	return context.WithValue(ctx, ctxKeyStopCause{}, cause)
+}
+
+func GetStopCause(ctx context.Context) error {
+	cause, _ := ctx.Value(ctxKeyStopCause{}).(error)
+	return cause
+}
+
 // Actor defines the interface for simple actors that only need start/stop operations.
 // Examples: configuration loaders, database migrations, one-time setup tasks.
 type Actor interface {
@@ -204,7 +215,7 @@ func (lc *Lifecycle) ResolveAll(ctx context.Context) error {
 // The cleanup is guaranteed to run even if any step fails,
 // using defer to ensure each started actor is properly stopped.
 // The ctx parameter controls the long-running monitoring process and can be used to cancel the entire operation.
-func (lc *Lifecycle) Serve(ctx context.Context) error {
+func (lc *Lifecycle) Serve(ctx context.Context) (xerr error) {
 	if !lc.served.CompareAndSwap(false, true) {
 		return ErrServed
 	}
@@ -257,6 +268,7 @@ func (lc *Lifecycle) Serve(ctx context.Context) error {
 			stopCtx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 			defer cancel()
 
+			stopCtx = withStopCause(stopCtx, xerr)
 			if err := actor.Stop(stopCtx); err != nil {
 				logger.ErrorContext(ctx, fmt.Sprintf("Failed to stop %s during cleanup", strings.ToLower(actorType)), "actor", actorName, "error", err)
 			} else {
@@ -289,7 +301,7 @@ func (lc *Lifecycle) Serve(ctx context.Context) error {
 			case <-gCtx.Done():
 				// Context cancelled or another service completed
 				logger.DebugContext(gCtx, "Service monitoring cancelled", "actor", actorName)
-				return gCtx.Err()
+				return context.Cause(gCtx)
 			}
 		})
 	}

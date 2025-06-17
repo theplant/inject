@@ -86,7 +86,7 @@ var SetupHTTPService = []any{
 				func(_ context.Context) error {
 					return svc.Serve()
 				},
-			).WithStopFunc(func(_ context.Context) error {
+			).WithStop(func(_ context.Context) error {
 				return svc.Close()
 			}).WithName("http"),
 		)
@@ -123,6 +123,16 @@ func TestLifecycle(t *testing.T) {
 			Level: slog.LevelDebug,
 		})))
 
+	type DummyActor struct {
+		*lifecycle.FuncActor
+		stopCause error
+	}
+
+	type DummyService struct {
+		*lifecycle.FuncService
+		stopCause error
+	}
+
 	// Provide dependencies directly to Lifecycle
 	require.NoError(t, lc.Provide(
 		// Signal service (Service)
@@ -131,6 +141,28 @@ func TestLifecycle(t *testing.T) {
 		SetupDB,
 		// HTTP service (Service)
 		SetupHTTPService,
+		// Dummy actor
+		func(lc *lifecycle.Lifecycle) *DummyActor {
+			d := &DummyActor{}
+			d.FuncActor = lifecycle.NewFuncActor(func(_ context.Context) error {
+				return nil
+			}, func(ctx context.Context) error {
+				d.stopCause = lifecycle.GetStopCause(ctx)
+				return nil
+			}).WithName("dummy-actor")
+			return lifecycle.Add(lc, d)
+		},
+		// Dummy service
+		func(lc *lifecycle.Lifecycle) *DummyService {
+			d := &DummyService{}
+			d.FuncService = lifecycle.NewFuncService(func(_ context.Context) error {
+				return nil
+			}).WithStop(func(ctx context.Context) error {
+				d.stopCause = lifecycle.GetStopCause(ctx)
+				return nil
+			}).WithName("dummy-service")
+			return lifecycle.Add(lc, d)
+		},
 	))
 
 	// Provide context for manual resolution
@@ -143,7 +175,7 @@ func TestLifecycle(t *testing.T) {
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 
 	// Verify dependency injection worked
-	_, err = lc.Invoke(func(db *DB, httpService *HTTPService) {
+	_, err = lc.Invoke(func(db *DB, httpService *HTTPService, dummyActor *DummyActor, dummyService *DummyService) {
 		require.Equal(t, 8080, httpService.Port)
 		require.Equal(t, db, httpService.DB)
 		require.False(t, httpService.IsRunning())
@@ -151,6 +183,9 @@ func TestLifecycle(t *testing.T) {
 		require.Equal(t, "test_db", db.Name)
 		require.Equal(t, "testDBPayload", db.Payload)
 		require.True(t, db.closed.Load())
+
+		require.Equal(t, context.DeadlineExceeded, dummyActor.stopCause)
+		require.Equal(t, context.DeadlineExceeded, dummyService.stopCause)
 	})
 	require.NoError(t, err)
 }

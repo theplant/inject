@@ -78,9 +78,9 @@ func NewFuncService(taskFunc func(ctx context.Context) error) *FuncService {
 	}
 }
 
-// WithStopFunc sets the stop function for the service.
-func (b *FuncService) WithStopFunc(stopFunc func(ctx context.Context) error) *FuncService {
-	b.stopFunc = stopFunc
+// WithStop sets the stop function for the service.
+func (b *FuncService) WithStop(stop func(ctx context.Context) error) *FuncService {
+	b.stopFunc = stop
 	return b
 }
 
@@ -124,7 +124,7 @@ func (b *FuncService) Stop(ctx context.Context) error {
 	case <-b.doneC:
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return context.Cause(ctx)
 	}
 }
 

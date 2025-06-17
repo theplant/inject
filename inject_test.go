@@ -775,6 +775,20 @@ func TestTypeNotAllowed(t *testing.T) {
 		// Error and Context fields should remain zero values since they don't have inject tags
 		require.Nil(t, structWithoutTags.Err)
 		require.Nil(t, structWithoutTags.Ctx)
+
+		err = injector6.Provide(func() *StructWithoutInjectTags {
+			return &StructWithoutInjectTags{
+				Val: "test-value",
+			}
+		})
+		require.NoError(t, err)
+
+		structWithoutTags = nil
+		err = injector6.Resolve(&structWithoutTags)
+		require.NoError(t, err)
+		require.Equal(t, "test-value", structWithoutTags.Val)
+		require.Nil(t, structWithoutTags.Err)
+		require.Nil(t, structWithoutTags.Ctx)
 	}
 }
 
