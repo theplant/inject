@@ -104,7 +104,7 @@ func (b *FuncService) Start(_ context.Context) error {
 			defer close(b.doneC)
 			defer func() { b.cancel(xerr) }()
 			return b.taskFunc(b.ctx)
-		}()
+		}() // nolint:errcheck
 	})
 	return nil
 }

@@ -152,10 +152,8 @@ func TestFuncService_StopBehavior(t *testing.T) {
 		func(ctx context.Context) error {
 			taskStarted <- true
 			// Wait for permission to finish or cancellation
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			}
+			<-ctx.Done()
+			return ctx.Err()
 		},
 	).WithStopFunc(func(ctx context.Context) error {
 		select {

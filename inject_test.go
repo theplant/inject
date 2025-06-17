@@ -302,6 +302,7 @@ func TestInterfaceType(t *testing.T) {
 		require.NoError(t, err)
 
 		err = injector.Resolve(&testIfaceDummy)
+		require.NoError(t, err)
 		require.NotNil(t, testIfaceDummy)
 		require.Equal(t, "hello", testIfaceDummy.Test())
 	}
@@ -319,6 +320,7 @@ func TestInterfaceType(t *testing.T) {
 		require.NoError(t, err)
 
 		err = injector.Resolve(&testIfaceDummy)
+		require.NoError(t, err)
 		require.NotNil(t, testIfaceDummy)
 		require.Equal(t, "hello", testIfaceDummy.Test())
 	}
@@ -522,22 +524,25 @@ func TestResolveContext(t *testing.T) {
 	{
 		injector := New()
 
+		type ctxKeyProvided struct{}
+		type ctxKeyActual struct{}
+
 		// Provide a Context (this should be ignored)
 		err := injector.Provide(func() Context {
-			return context.WithValue(context.Background(), "provided", "ignored")
+			return context.WithValue(context.Background(), ctxKeyProvided{}, "ignored")
 		})
 		require.ErrorIs(t, err, ErrTypeNotAllowed)
 
 		err = injector.Provide(func(ctx Context) string {
 			// Should get the actual inject context, not the provided one
-			if val := ctx.Value("actual"); val != nil {
+			if val := ctx.Value(ctxKeyActual{}); val != nil {
 				return val.(string)
 			}
 			return "no-actual-value"
 		})
 		require.NoError(t, err)
 
-		actualCtx := context.WithValue(context.Background(), "actual", "from-resolve")
+		actualCtx := context.WithValue(context.Background(), ctxKeyActual{}, "from-resolve")
 		var str string
 		err = injector.ResolveContext(actualCtx, &str)
 		require.NoError(t, err)
@@ -554,8 +559,9 @@ func TestApplyContext(t *testing.T) {
 	// Test with context values
 	{
 		injector := New()
-		type contextKey string
-		const key contextKey = "applyKey"
+		type ctxKey string
+		const key ctxKey = "applyKey"
+		const numKey ctxKey = "numKey"
 
 		err := injector.Provide(func(ctx Context) string {
 			if val := ctx.Value(key); val != nil {
@@ -565,7 +571,7 @@ func TestApplyContext(t *testing.T) {
 		})
 		require.NoError(t, err)
 		err = injector.Provide(func(ctx Context) int {
-			if val := ctx.Value("numKey"); val != nil {
+			if val := ctx.Value(numKey); val != nil {
 				return val.(int)
 			}
 			return 0
@@ -573,7 +579,7 @@ func TestApplyContext(t *testing.T) {
 		require.NoError(t, err)
 
 		ctx := context.WithValue(context.Background(), key, "context-value")
-		ctx = context.WithValue(ctx, "numKey", 42)
+		ctx = context.WithValue(ctx, numKey, 42)
 
 		testStruct := &TestStruct{}
 		err = injector.ApplyContext(ctx, testStruct)
