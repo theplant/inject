@@ -8,6 +8,7 @@ The `inject` package is inspired by [codecangsta/inject](https://github.com/code
 - `Invoke`: Used to resolve dependencies and invoke a function with them.
 - `Resolve`: Used to resolve a dependency by its type.
 - `Apply`: Used to apply dependencies to a struct.
+- `Build`: Used to eagerly build all provided dependencies.
 - `SetParent`: Used to set the parent injector.
 - Thread safety ensured
 - Supports injection through the `inject` tag of struct fields
@@ -168,5 +169,48 @@ func ExampleInjector() {
 	// Document name: "A simple string"
 	// Document read count: 32
 }
+```
 
+## Eager Dependency Building
+
+The `Build` and `BuildContext` methods allow you to eagerly instantiate all provided dependencies at once. This is useful for:
+
+- Application startup initialization
+- Validating that all dependencies can be created successfully
+- Pre-warming expensive dependencies
+- Ensuring deterministic dependency creation order
+
+```go
+func ExampleBuild() {
+	inj := inject.New()
+
+	// Provide dependencies
+	if err := inj.Provide(
+		func() string { return "config-value" },
+		func() int { return 42 },
+		func(s string) Printer {
+			fmt.Printf("Creating printer with config: %s\n", s)
+			return &SimplePrinter{}
+		},
+	); err != nil {
+		panic(err)
+	}
+
+	// Build all dependencies eagerly
+	if err := inj.Build(); err != nil {
+		panic(err)
+	}
+
+	fmt.Println("All dependencies built successfully!")
+
+	// All dependencies are now instantiated and ready to use
+	var printer Printer
+	if err := inj.Resolve(&printer); err != nil {
+		panic(err)
+	}
+
+	// Output:
+	// Creating printer with config: config-value
+	// All dependencies built successfully!
+}
 ```

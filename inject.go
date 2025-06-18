@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -269,9 +270,9 @@ func (inj *Injector) applyStruct(ctx Context, rv reflect.Value) error {
 	return nil
 }
 
-// flat recursively flattens any arrays/slices found in the arguments.
+// flatten recursively flattens any arrays/slices found in the arguments.
 // This allows grouping related constructors together for better organization.
-func Flatten(vs ...any) []any {
+func flatten(vs ...any) []any {
 	var result []any
 
 	for _, f := range vs {
@@ -285,7 +286,7 @@ func Flatten(vs ...any) []any {
 				subItems[i] = rv.Index(i).Interface()
 			}
 			// Recursively flatten the sub-items
-			result = append(result, Flatten(subItems...)...)
+			result = append(result, flatten(subItems...)...)
 		} else {
 			// Regular constructor function, add directly
 			result = append(result, f)
@@ -296,7 +297,7 @@ func Flatten(vs ...any) []any {
 }
 
 func (inj *Injector) Provide(ctors ...any) (xerr error) {
-	ctors = Flatten(ctors...)
+	ctors = flatten(ctors...)
 
 	inj.mu.Lock()
 	defer inj.mu.Unlock()
@@ -352,6 +353,42 @@ func (inj *Injector) ResolveContext(ctx Context, refs ...any) error {
 		}
 		reflect.ValueOf(ref).Elem().Set(rv)
 	}
+	return nil
+}
+
+// Build automatically resolves all provided types using background context.
+// This will trigger the creation of all registered constructors,
+// ensuring that all dependencies are properly instantiated.
+func (inj *Injector) Build() error {
+	return inj.BuildContext(context.Background())
+}
+
+// BuildContext automatically resolves all provided types.
+// This will trigger the creation of all registered constructors,
+// ensuring that all dependencies are properly instantiated.
+func (inj *Injector) BuildContext(ctx Context) error {
+	inj.mu.RLock()
+	var typesToResolve []reflect.Type
+	for typ := range inj.providers {
+		typesToResolve = append(typesToResolve, typ)
+	}
+	inj.mu.RUnlock()
+
+	// Sort types by their string representation for stable order
+	slices.SortFunc(typesToResolve, func(a, b reflect.Type) int {
+		return strings.Compare(a.String(), b.String())
+	})
+
+	for _, ty := range typesToResolve {
+		// Create a pointer to the type for resolution
+		ptr := reflect.New(ty)
+
+		// Resolve the type using the injector
+		if err := inj.ResolveContext(ctx, ptr.Interface()); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 

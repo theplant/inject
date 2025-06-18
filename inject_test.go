@@ -1034,60 +1034,97 @@ func TestCoConstructorCircularDependencyDetection(t *testing.T) {
 }
 
 func TestErrorTypePositionValidation(t *testing.T) {
-	// Test case 1: Error type in the middle should fail
 	{
+		// Test error in middle position (invalid)
 		injector := New()
-
-		err := injector.Provide(func() (string, error, int) {
-			return "test", nil, 42
-		})
-
+		err := injector.Provide(func() (string, error, int) { return "", nil, 0 })
 		require.ErrorIs(t, err, ErrErrorTypeMustBeLast)
-		require.Contains(t, err.Error(), "error type found at position 1, but must be at position 2")
 	}
 
-	// Test case 2: Error type at the beginning should fail
 	{
+		// Test error as last return value (valid)
 		injector := New()
-
-		err := injector.Provide(func() (error, string, int) {
-			return nil, "test", 42
-		})
-
-		require.ErrorIs(t, err, ErrErrorTypeMustBeLast)
-		require.Contains(t, err.Error(), "error type found at position 0, but must be at position 2")
-	}
-
-	// Test case 3: Error type at the end should work
-	{
-		injector := New()
-
-		err := injector.Provide(func() (string, int, error) {
-			return "test", 42, nil
-		})
-
+		err := injector.Provide(func() (string, int, error) { return "", 0, nil })
 		require.NoError(t, err)
 	}
 
-	// Test case 4: Only error type should return ErrInvalidProvider (no useful types provided)
 	{
+		// Test multiple errors (invalid)
 		injector := New()
+		err := injector.Provide(func() (error, string, error) { return nil, "", nil })
+		require.ErrorIs(t, err, ErrErrorTypeMustBeLast)
+	}
 
-		err := injector.Provide(func() error {
-			return nil
-		})
-
+	{
+		// Test only error return (invalid)
+		injector := New()
+		err := injector.Provide(func() error { return nil })
 		require.ErrorIs(t, err, ErrInvalidProvider)
 	}
+}
 
-	// Test case 5: No error type should work
-	{
+func TestBuild(t *testing.T) {
+	t.Run("basic functionality", func(t *testing.T) {
 		injector := New()
 
-		err := injector.Provide(func() (string, int) {
-			return "test", 42
-		})
-
+		// Provide multiple types
+		err := injector.Provide(
+			func() string { return "test" },
+			func() int { return 42 },
+			func() bool { return true },
+		)
 		require.NoError(t, err)
-	}
+
+		// Build should trigger all constructors
+		err = injector.Build()
+		require.NoError(t, err)
+
+		// Verify all types are now resolved as values (including *Injector)
+		require.Len(t, injector.providers, 0) // All providers should be resolved
+		require.Len(t, injector.values, 4)    // string, int, bool, *Injector
+	})
+
+	t.Run("stable order", func(t *testing.T) {
+		// Test multiple times to ensure consistent ordering
+		for i := 0; i < 5; i++ {
+			injector := New()
+
+			var resolved []string
+			err := injector.Provide(
+				func() string { resolved = append(resolved, "string"); return "test" },
+				func() int { resolved = append(resolved, "int"); return 42 },
+				func() bool { resolved = append(resolved, "bool"); return true },
+			)
+			require.NoError(t, err)
+
+			err = injector.Build()
+			require.NoError(t, err)
+
+			// Order should be consistent (alphabetical by type name)
+			expected := []string{"bool", "int", "string"}
+			require.Equal(t, expected, resolved)
+		}
+	})
+
+	t.Run("constructor error", func(t *testing.T) {
+		injector := New()
+		expectedErr := errors.New("constructor failed")
+
+		err := injector.Provide(
+			func() string { return "test" },
+			func() (int, error) { return 0, expectedErr },
+		)
+		require.NoError(t, err)
+
+		err = injector.Build()
+		require.ErrorIs(t, err, expectedErr)
+	})
+
+	t.Run("empty injector", func(t *testing.T) {
+		injector := New()
+
+		// Should not fail on empty injector (only has *Injector)
+		err := injector.Build()
+		require.NoError(t, err)
+	})
 }

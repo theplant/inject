@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -67,19 +66,15 @@ type Lifecycle struct {
 	served      atomic.Bool
 	mu          sync.RWMutex
 	logger      *slog.Logger
-
-	// Track all types for auto-resolution using slice for stable order
-	typesToResolve []reflect.Type
 }
 
 // New creates a new Lifecycle instance with embedded injector and default stop timeout.
 func New() *Lifecycle {
 	inj := inject.New()
 	lc := &Lifecycle{
-		Injector:       inj,
-		stopTimeout:    DefaultStopTimeout,
-		logger:         slog.Default(),
-		typesToResolve: make([]reflect.Type, 0),
+		Injector:    inj,
+		stopTimeout: DefaultStopTimeout,
+		logger:      slog.Default(),
 	}
 	_ = inj.Provide(func() *Lifecycle { return lc })
 	return lc
@@ -149,56 +144,7 @@ func (lc *Lifecycle) Provide(ctors ...any) error {
 		return ErrServed
 	}
 
-	ctors = inject.Flatten(ctors...)
-
-	// First, register with the embedded injector
-	if err := lc.Injector.Provide(ctors...); err != nil {
-		return err
-	}
-
-	lc.mu.Lock()
-	defer lc.mu.Unlock()
-
-	// Track all non-error return types
-	for _, ctor := range ctors {
-		ctorType := reflect.TypeOf(ctor)
-
-		// Check return types
-		for i := 0; i < ctorType.NumOut(); i++ {
-			returnType := ctorType.Out(i)
-
-			// Use inject.IsTypeAllowed instead of just checking error type
-			if !inject.IsTypeAllowed(returnType) {
-				continue
-			}
-
-			// Add to typesToResolve slice with deduplication
-			if !slices.Contains(lc.typesToResolve, returnType) {
-				lc.typesToResolve = append(lc.typesToResolve, returnType)
-			}
-		}
-	}
-
-	return nil
-}
-
-// ResolveAll automatically resolves all provided types using a clean child injector.
-func (lc *Lifecycle) ResolveAll(ctx context.Context) error {
-	lc.mu.Lock()
-	typesToResolve := slices.Clone(lc.typesToResolve)
-	lc.mu.Unlock()
-
-	for _, ty := range typesToResolve {
-		// Create a pointer to the type for resolution
-		ptr := reflect.New(ty)
-
-		// Resolve the type using the child injector
-		if err := lc.ResolveContext(ctx, ptr.Interface()); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return lc.Injector.Provide(ctors...)
 }
 
 // Serve provides a complete lifecycle management solution.
@@ -221,7 +167,7 @@ func (lc *Lifecycle) Serve(ctx context.Context) (xerr error) {
 	}
 
 	// Automatically resolve all provided types with context
-	if err := lc.ResolveAll(ctx); err != nil {
+	if err := lc.Injector.BuildContext(inject.Context(ctx)); err != nil {
 		return err
 	}
 
