@@ -1,9 +1,10 @@
 package inject
 
 import (
-	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/pkg/errors"
 )
 
 // unsafeDFSDetectCycle performs DFS to detect circular dependencies starting from a target type
@@ -38,7 +39,7 @@ func (inj *Injector) unsafeDFSDetectCycleRecursive(targetType reflect.Type, visi
 				for i, dep := range cyclePart {
 					cycleStrings[i] = dep.String()
 				}
-				return fmt.Errorf("%w: %s", ErrCircularDependency, strings.Join(cycleStrings, " -> "))
+				return errors.Wrap(ErrCircularDependency, strings.Join(cycleStrings, " -> "))
 			}
 		}
 	}
@@ -118,7 +119,7 @@ func (inj *Injector) unsafeGetDirectDependencies(targetType reflect.Type) ([]dir
 			inType := providerType.In(i)
 			if inType != typeContext && !seen[inType] {
 				if !IsTypeAllowed(inType) {
-					return nil, fmt.Errorf("%w: %s", ErrTypeNotAllowed, inType.String())
+					return nil, errors.Wrap(ErrTypeNotAllowed, inType.String())
 				}
 				deps = append(deps, directDep{
 					rt:  inType,
@@ -161,7 +162,7 @@ func getStructFieldDependencies(t reflect.Type) ([]reflect.Type, error) {
 		field := t.Field(i)
 		if _, ok := field.Tag.Lookup(TagName); ok {
 			if !IsTypeAllowed(field.Type) {
-				return nil, fmt.Errorf("%w: %s", ErrTypeNotAllowed, field.Type.String())
+				return nil, errors.Wrap(ErrTypeNotAllowed, field.Type.String())
 			}
 			if !seen[field.Type] {
 				deps = append(deps, field.Type)

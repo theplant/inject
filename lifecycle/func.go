@@ -2,9 +2,10 @@ package lifecycle
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
+
+	"github.com/pkg/errors"
 )
 
 // FuncActor wraps start and stop functions into an Actor implementation.

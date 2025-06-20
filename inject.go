@@ -2,8 +2,6 @@ package inject
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"maps"
 	"reflect"
 	"slices"
@@ -12,6 +10,7 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/pkg/errors"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -99,11 +98,11 @@ func (inj *Injector) unsafeProvide(ctor any) error {
 
 	for _, outType := range outputTypes {
 		if _, ok := inj.values[outType]; ok {
-			return fmt.Errorf("%w: %s", ErrTypeAlreadyProvided, outType.String())
+			return errors.Wrap(ErrTypeAlreadyProvided, outType.String())
 		}
 
 		if _, ok := inj.providers[outType]; ok {
-			return fmt.Errorf("%w: %s", ErrTypeAlreadyProvided, outType.String())
+			return errors.Wrap(ErrTypeAlreadyProvided, outType.String())
 		}
 
 		inj.providers[outType] = provider
@@ -133,7 +132,7 @@ func (inj *Injector) invoke(ctx Context, f any) ([]reflect.Value, error) {
 			continue
 		}
 		if !IsTypeAllowed(argType) {
-			return nil, fmt.Errorf("%w: %s", ErrTypeNotAllowed, argType.String())
+			return nil, errors.Wrap(ErrTypeNotAllowed, argType.String())
 		}
 		argValue, err := inj.resolve(ctx, argType)
 		if err != nil {
@@ -213,7 +212,7 @@ func (inj *Injector) resolve(ctx Context, rt reflect.Type) (reflect.Value, error
 		return parent.resolve(ctx, rt)
 	}
 
-	return rv, fmt.Errorf("%w: %s", ErrTypeNotProvided, rt.String())
+	return rv, errors.Wrap(ErrTypeNotProvided, rt.String())
 }
 
 func unwrapPtr(rv reflect.Value) reflect.Value {
@@ -247,7 +246,7 @@ func (inj *Injector) applyStruct(ctx Context, rv reflect.Value) error {
 		structField := rt.Field(i)
 		if tag, ok := structField.Tag.Lookup(TagName); ok {
 			if !IsTypeAllowed(structField.Type) {
-				return fmt.Errorf("%w: %s", ErrTypeNotAllowed, structField.Type.String())
+				return errors.Wrap(ErrTypeNotAllowed, structField.Type.String())
 			}
 
 			dep, err := inj.resolve(ctx, structField.Type)
@@ -344,7 +343,7 @@ func (inj *Injector) ResolveContext(ctx Context, refs ...any) error {
 	for _, ref := range refs {
 		refType := reflect.TypeOf(ref)
 		if refType == nil || refType.Kind() != reflect.Ptr {
-			return fmt.Errorf("resolve requires pointer arguments, got %T", ref)
+			return errors.Errorf("resolve requires pointer arguments, got %T", ref)
 		}
 
 		rv, err := inj.resolve(ctx, refType.Elem())
@@ -409,15 +408,14 @@ func getValidOutputTypes(rt reflect.Type) ([]reflect.Type, error) {
 		// Validate error type position: error can only be the last return value
 		if outType == typeError {
 			if i != numOut-1 {
-				return nil, fmt.Errorf("%w: error type found at position %d, but must be at position %d",
-					ErrErrorTypeMustBeLast, i, numOut-1)
+				return nil, errors.Wrapf(ErrErrorTypeMustBeLast, "error type found at position %d, but must be at position %d", i, numOut-1)
 			}
 			// Skip error type if it is the last return value
 			continue
 		}
 
 		if !IsTypeAllowed(outType) {
-			return nil, fmt.Errorf("%w: %s", ErrTypeNotAllowed, outType.String())
+			return nil, errors.Wrap(ErrTypeNotAllowed, outType.String())
 		}
 
 		if !seen[outType] {
