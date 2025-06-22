@@ -189,3 +189,22 @@ func TestLifecycle(t *testing.T) {
 	})
 	require.NoError(t, err)
 }
+
+func TestServeConvenienceFunction(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	err := lifecycle.Serve(ctx,
+		func() string { return "test-value" },
+		lifecycle.SetupSignal,
+	)
+
+	// Should timeout since we have a service running
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	// Test error case - no services
+	err = lifecycle.Serve(context.Background(),
+		func() string { return "test" },
+	)
+	require.ErrorIs(t, err, lifecycle.ErrNoServices)
+}

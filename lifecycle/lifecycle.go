@@ -161,13 +161,13 @@ func (lc *Lifecycle) Provide(ctors ...any) error {
 // The cleanup is guaranteed to run even if any step fails,
 // using defer to ensure each started actor is properly stopped.
 // The ctx parameter controls the long-running monitoring process and can be used to cancel the entire operation.
-func (lc *Lifecycle) Serve(ctx context.Context) (xerr error) {
+func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 	if !lc.served.CompareAndSwap(false, true) {
 		return ErrServed
 	}
 
 	// Automatically resolve all provided types with context
-	if err := lc.Injector.BuildContext(inject.Context(ctx)); err != nil {
+	if err := lc.Injector.BuildContext(inject.Context(ctx), ctors...); err != nil {
 		return err
 	}
 
@@ -262,6 +262,11 @@ func (lc *Lifecycle) Serve(ctx context.Context) (xerr error) {
 	}
 	logger.ErrorContext(ctx, "Lifecycle failed", "error", err)
 	return err
+}
+
+func Serve(ctx context.Context, ctors ...any) error {
+	lc := New()
+	return lc.Serve(ctx, ctors...)
 }
 
 // getActorName returns a human-readable name for an actor, using Named interface if available

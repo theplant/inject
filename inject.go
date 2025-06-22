@@ -358,14 +358,20 @@ func (inj *Injector) ResolveContext(ctx Context, refs ...any) error {
 // Build automatically resolves all provided types using background context.
 // This will trigger the creation of all registered constructors,
 // ensuring that all dependencies are properly instantiated.
-func (inj *Injector) Build() error {
-	return inj.BuildContext(context.Background())
+func (inj *Injector) Build(ctors ...any) error {
+	return inj.BuildContext(context.Background(), ctors...)
 }
 
 // BuildContext automatically resolves all provided types.
 // This will trigger the creation of all registered constructors,
 // ensuring that all dependencies are properly instantiated.
-func (inj *Injector) BuildContext(ctx Context) error {
+func (inj *Injector) BuildContext(ctx Context, ctors ...any) error {
+	if len(ctors) > 0 {
+		if err := inj.Provide(ctors...); err != nil {
+			return err
+		}
+	}
+
 	inj.mu.RLock()
 	var typesToResolve []reflect.Type
 	for typ := range inj.providers {
