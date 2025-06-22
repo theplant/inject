@@ -155,8 +155,10 @@ func TestLifecycle(t *testing.T) {
 		// Dummy service
 		func(lc *lifecycle.Lifecycle) *DummyService {
 			d := &DummyService{}
-			d.FuncService = lifecycle.NewFuncService(func(_ context.Context) error {
-				return nil
+			d.FuncService = lifecycle.NewFuncService(func(ctx context.Context) error {
+				// Keep running until context is cancelled
+				time.Sleep(100 * time.Millisecond) // Run longer than test timeout
+				return ctx.Err()
 			}).WithStop(func(ctx context.Context) error {
 				d.stopCause = lifecycle.GetStopCause(ctx)
 				return nil

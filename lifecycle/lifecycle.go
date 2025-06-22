@@ -147,6 +147,9 @@ func (lc *Lifecycle) Provide(ctors ...any) error {
 	return lc.Injector.Provide(ctors...)
 }
 
+// errServiceCompleted is used internally to signal that a service has completed normally
+var errServiceCompleted = errors.New("service completed")
+
 // Serve provides a complete lifecycle management solution.
 // It automatically resolves all provided types, starts all actors, monitors long-running services, and ensures proper cleanup.
 //
@@ -236,14 +239,15 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 		g.Go(func() error {
 			select {
 			case <-svc.Done():
-				// Service completed, return its error (may be nil)
+				// Service completed, check its error
 				err := svc.Err()
 				if err != nil {
 					logger.ErrorContext(gCtx, "Service completed with error", "actor", actorName, "error", err)
-				} else {
-					logger.InfoContext(gCtx, "Service completed successfully", "actor", actorName)
+					return err
 				}
-				return err
+				logger.InfoContext(gCtx, "Service completed successfully", "actor", actorName)
+				// Return special error to trigger lifecycle shutdown when service completes normally
+				return errServiceCompleted
 			case <-gCtx.Done():
 				// Context cancelled or another service completed
 				logger.DebugContext(gCtx, "Service monitoring cancelled", "actor", actorName)
@@ -256,8 +260,8 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 
 	// Wait for any service to complete or context cancellation
 	err := g.Wait()
-	if err == nil || errors.Is(err, context.Canceled) {
-		logger.InfoContext(ctx, "Lifecycle cancelled")
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, errServiceCompleted) {
+		logger.InfoContext(ctx, "Lifecycle completed")
 		return nil
 	}
 	logger.ErrorContext(ctx, "Lifecycle failed", "error", err)
