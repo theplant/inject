@@ -132,7 +132,7 @@ func ExampleInjector() {
 	{
 		// Create a child injector and then apply dependencies to a struct instance
 		child := inject.New()
-		child.SetParent(inj)
+		_ = child.SetParent(inj)
 
 		doc := &Document{}
 		if err := child.Apply(doc); err != nil {

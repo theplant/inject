@@ -32,7 +32,7 @@ func NewSignalService(signals ...os.Signal) *SignalService {
 
 			// Return nil for graceful shutdown (signal received)
 			// Return context error for cancellation
-			return context.Cause(ctx)
+			return context.Cause(signalCtx)
 		},
 	).WithName("signal")
 
