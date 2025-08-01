@@ -56,36 +56,53 @@ type Named interface {
 	GetName() string
 }
 
+// Lifecycle also implements Service interface.
+var _ Service = (*Lifecycle)(nil)
+
 // Lifecycle manages the lifecycle of multiple actor instances.
 // It provides coordinated startup, monitoring, and cleanup of both simple actors and long-running services.
 type Lifecycle struct {
 	*inject.Injector // Embedded injector for dependency management
+	*FuncService
 
-	actors      []Actor
-	stopTimeout time.Duration
-	served      atomic.Bool
-	mu          sync.RWMutex
-	logger      *slog.Logger
+	actors           []Actor
+	stopActorTimeout time.Duration
+	served           atomic.Bool
+	mu               sync.RWMutex
+	logger           *slog.Logger
 }
 
 // New creates a new Lifecycle instance with embedded injector and default stop timeout.
 func New() *Lifecycle {
 	inj := inject.New()
 	lc := &Lifecycle{
-		Injector:    inj,
-		stopTimeout: DefaultStopTimeout,
-		logger:      slog.Default(),
+		Injector:         inj,
+		stopActorTimeout: DefaultStopTimeout,
+		logger:           slog.Default(),
 	}
+	lc.FuncService = NewFuncService(func(ctx context.Context) error {
+		return lc.Serve(ctx)
+	}).WithName("lifecycle")
 	_ = inj.Provide(func() *Lifecycle { return lc })
 	return lc
 }
 
-// WithStopTimeout sets the timeout for stop operations and returns the Lifecycle instance.
-// This allows for method chaining during initialization.
-func (lc *Lifecycle) WithStopTimeout(timeout time.Duration) *Lifecycle {
+// WithStop is not supported for Lifecycle.
+func (lc *Lifecycle) WithStop(stop func(ctx context.Context) error) *Lifecycle {
+	panic("this method is not supported for Lifecycle")
+}
+
+// WithName sets the name for the lifecycle.
+func (lc *Lifecycle) WithName(name string) *Lifecycle {
+	lc.FuncService.WithName(name)
+	return lc
+}
+
+// WithStopActorTimeout sets the timeout for stop operation for every actor.
+func (lc *Lifecycle) WithStopActorTimeout(timeout time.Duration) *Lifecycle {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	lc.stopTimeout = timeout
+	lc.stopActorTimeout = timeout
 	return lc
 }
 
@@ -141,7 +158,7 @@ func LazyAddE[A Actor](lc *Lifecycle, f func() (A, error)) func() (A, error) {
 // This overrides the embedded Injector's Provide method to enable auto-resolution of types.
 func (lc *Lifecycle) Provide(ctors ...any) error {
 	if lc.served.Load() {
-		return ErrServed
+		return errors.WithStack(ErrServed)
 	}
 
 	return lc.Injector.Provide(ctors...)
@@ -166,7 +183,7 @@ var errServiceCompleted = errors.New("service completed")
 // The ctx parameter controls the long-running monitoring process and can be used to cancel the entire operation.
 func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 	if !lc.served.CompareAndSwap(false, true) {
-		return ErrServed
+		return errors.WithStack(ErrServed)
 	}
 
 	// Automatically resolve all provided types with context
@@ -177,7 +194,7 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 	lc.mu.RLock()
 	actors := slices.Clone(lc.actors)
 	logger := lc.logger
-	stopTimeout := lc.stopTimeout
+	stopTimeout := lc.stopActorTimeout
 	lc.mu.RUnlock()
 
 	// Check for long-running services before starting actors
@@ -247,11 +264,11 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 				}
 				logger.InfoContext(gCtx, "Service completed successfully", "actor", actorName)
 				// Return special error to trigger lifecycle shutdown when service completes normally
-				return errServiceCompleted
+				return errors.WithStack(errServiceCompleted)
 			case <-gCtx.Done():
 				// Context cancelled or another service completed
 				logger.DebugContext(gCtx, "Service monitoring cancelled", "actor", actorName)
-				return context.Cause(gCtx)
+				return errors.WithStack(context.Cause(gCtx))
 			}
 		})
 	}
@@ -268,6 +285,7 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 	return err
 }
 
+// Serve is a convenience function that creates a new Lifecycle instance and calls Serve on it.
 func Serve(ctx context.Context, ctors ...any) error {
 	lc := New()
 	return lc.Serve(ctx, ctors...)

@@ -5,9 +5,13 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/pkg/errors"
 )
 
 var DefaultSignals = []os.Signal{syscall.SIGINT, syscall.SIGTERM}
+
+var _ Service = (*SignalService)(nil)
 
 // SignalService is a specialized service for handling OS signals.
 // This provides a distinct type for dependency injection while reusing FuncService functionality.
@@ -32,12 +36,23 @@ func NewSignalService(signals ...os.Signal) *SignalService {
 
 			// Return nil for graceful shutdown (signal received)
 			// Return context error for cancellation
-			return context.Cause(signalCtx)
+			return errors.WithStack(context.Cause(signalCtx))
 		},
 	).WithName("signal")
 
 	// Wrap FuncService in SignalService
 	return &SignalService{FuncService: funcSvc}
+}
+
+// WithStop is not supported for SignalService.
+func (s *SignalService) WithStop(stop func(ctx context.Context) error) *SignalService {
+	panic("this method is not supported for SignalService")
+}
+
+// WithName sets the name for the signal service.
+func (s *SignalService) WithName(name string) *SignalService {
+	s.FuncService.WithName(name)
+	return s
 }
 
 // SetupSignal creates and registers a signal handling service that listens for SIGINT and SIGTERM.

@@ -186,8 +186,8 @@ func TestLifecycle(t *testing.T) {
 		require.Equal(t, "testDBPayload", db.Payload)
 		require.True(t, db.closed.Load())
 
-		require.Equal(t, context.DeadlineExceeded, dummyActor.stopCause)
-		require.Equal(t, context.DeadlineExceeded, dummyService.stopCause)
+		require.ErrorIs(t, dummyActor.stopCause, context.DeadlineExceeded)
+		require.ErrorIs(t, dummyService.stopCause, context.DeadlineExceeded)
 	})
 	require.NoError(t, err)
 }
