@@ -1,6 +1,6 @@
 # inject
 
-The `inject` package is inspired by [codecangsta/inject](https://github.com/codegangsta/inject) and provides simplified public methods for dependency injection in Go.
+The `inject` package provides a powerful and intuitive dependency injection framework for Go applications. It features automatic dependency resolution, lifecycle management, and thread-safe operations, making it ideal for building scalable applications with clean architecture.
 
 ## Features
 
@@ -15,202 +15,314 @@ The `inject` package is inspired by [codecangsta/inject](https://github.com/code
 
 ## Usage
 
-Here's an example of how to use the `inject` package:
+For complete usage examples of the basic inject functionality, see [example_test.go](./example_test.go).
+
+## Lifecycle Management
+
+The `lifecycle` subpackage provides a complete lifecycle management system that combines dependency injection with coordinated startup, monitoring, and shutdown of services and actors.
+
+### Key Concepts
+
+- **Actor**: Simple components with start/stop operations (databases, configurations, migrations)
+- **Service**: Long-running components that can signal completion (HTTP servers, background workers)
+- **Lifecycle**: Orchestrates multiple actors and services with dependency injection
+
+### Core Features
+
+- **Dependency Injection**: Built-in injector for managing dependencies
+- **Coordinated Startup**: Actors start in registration order
+- **Graceful Shutdown**: Actors stop in reverse order with timeout control
+- **Service Monitoring**: Automatic monitoring of long-running services
+- **Signal Handling**: Built-in OS signal handling for graceful shutdown
+- **Error Handling**: Comprehensive error handling and logging
+
+### Basic Example
 
 ```go
-package inject_test
+package main
 
 import (
-	"fmt"
+    "context"
+    "fmt"
+    "log"
+    "net/http"
 
-	"github.com/theplant/inject"
+    "github.com/pkg/errors"
+    "github.com/theplant/inject/lifecycle"
 )
 
-// Define interfaces and implementations
-type Printer interface {
-	Print() string
+type Config struct {
+    HTTPServerPort int
+    DatabaseURL    string
+    RPCServerURL   string
 }
 
-type SimplePrinter struct{}
-
-func (p *SimplePrinter) Print() string {
-	return "Printing document"
+type Database struct {
+    connected bool
 }
 
-// New type definition
-type DocumentDescription string
-
-type Document struct {
-	Injector *inject.Injector `inject:""` // Injector will be provided by default, so you can also get it if needed
-
-	ID          string              // Not injected
-	Description DocumentDescription `inject:""`         // Exported non-optional field
-	Printer     Printer             `inject:""`         // Exported non-optional field
-	Size        int64               `inject:"optional"` // Exported optional field
-	page        int                 `inject:""`         // Unexported non-optional field
-	name        string              `inject:"optional"` // Unexported optional field
-	ReadCount   int32               `inject:""`         // Unexported non-optional field
+func (db *Database) Connect() error {
+    db.connected = true
+    log.Println("Database connected")
+    return nil
 }
 
-func ExampleInjector() {
-	inj := inject.New()
+func (db *Database) Close() error {
+    db.connected = false
+    log.Println("Database closed")
+    return nil
+}
 
-	// Provide dependencies
-	if err := inj.Provide(
-		func() Printer {
-			return &SimplePrinter{}
-		},
-		func() string {
-			return "A simple string"
-		},
-		func() DocumentDescription {
-			return "A document description"
-		},
-		func() (int, int32) {
-			return 42, 32
-		},
-	); err != nil {
-		panic(err)
-	}
+type RPCClient struct {
+    connected bool
+}
 
-	{
-		// Resolve dependencies
-		var printer Printer
-		if err := inj.Resolve(&printer); err != nil {
-			panic(err)
-		}
-		fmt.Println("Resolved printer:", printer.Print())
-	}
+func (c *RPCClient) Close() error {
+    c.connected = false
+    log.Println("RPC client disconnected")
+    return nil
+}
 
-	printDoc := func(doc *Document) {
-		fmt.Printf("Document id: %q\n", doc.ID)
-		fmt.Printf("Document description: %q\n", doc.Description)
-		fmt.Printf("Document printer: %q\n", doc.Printer.Print())
-		fmt.Printf("Document size: %d\n", doc.Size)
-		fmt.Printf("Document page: %d\n", doc.page)
-		fmt.Printf("Document name: %q\n", doc.name)
-		fmt.Printf("Document read count: %d\n", doc.ReadCount)
-	}
+func DialContext(ctx context.Context, serverURL string) (*RPCClient, error) {
+    if serverURL == "" {
+        return nil, errors.New("server URL cannot be empty")
+    }
 
-	fmt.Println("-------")
+    client := &RPCClient{
+        connected: true,
+    }
 
-	{
-		// Invoke a function
-		results, err := inj.Invoke(func(printer Printer) *Document {
-			return &Document{
-				// This value will be retained as it is not tagged with `inject`, despite string being provided
-				ID: "idInvoked",
-				// This value will be overridden since it is tagged with `inject` and DocumentDescription is provided
-				Description: "DescriptionInvoked",
-				// This value will be overridden with the same value since it is tagged with `inject` and Printer is provided
-				Printer: printer,
-				// This value will be retained since it is tagged with `inject:"optional"` and int64 is not provided
-				Size: 100,
-			}
-		})
-		if err != nil {
-			panic(err)
-		}
+    log.Printf("RPC client connected to %s", serverURL)
+    return client, nil
+}
 
-		printDoc(results[0].(*Document))
-	}
+func CreateRPCClient(ctx context.Context, lc *lifecycle.Lifecycle, conf *Config) (*RPCClient, error) {
+    client, err := DialContext(ctx, conf.RPCServerURL)
+    if err != nil {
+        return nil, err
+    }
 
-	fmt.Println("-------")
+    lc.Add(lifecycle.NewFuncActor(
+        nil,
+        func(_ context.Context) error {
+            return client.Close()
+        },
+    ).WithName("rpc-client"))
 
-	{
-		// Apply dependencies to a struct instance
-		doc := &Document{}
-		if err := inj.Apply(doc); err != nil {
-			panic(err)
-		}
+    return client, nil
+}
 
-		printDoc(doc)
-	}
+func main() {
+    if err := lifecycle.Serve(context.Background(),
+        lifecycle.SetupSignal,
 
-	fmt.Println("-------")
+        func() *Config {
+            return &Config{
+                HTTPServerPort: 8080,
+                DatabaseURL:    "postgres://localhost:5432/myapp",
+                RPCServerURL:   "127.0.0.1:1088",
+            }
+        },
 
-	{
-		// Create a child injector and then apply dependencies to a struct instance
-		child := inject.New()
-		_ = child.SetParent(inj)
+        CreateRPCClient,
 
-		doc := &Document{}
-		if err := child.Apply(doc); err != nil {
-			panic(err)
-		}
+        func(lc *lifecycle.Lifecycle, conf *Config) *Database {
+            db := &Database{}
+            lc.Add(lifecycle.NewFuncActor(
+                func(_ context.Context) error {
+                    log.Printf("Connecting to database: %s", conf.DatabaseURL)
+                    return db.Connect()
+                },
+                func(_ context.Context) error {
+                    return db.Close()
+                },
+            ).WithName("database"))
+            return db
+        },
 
-		printDoc(doc)
-	}
+        func(lc *lifecycle.Lifecycle, conf *Config, db *Database, rpcClient *RPCClient) *http.Server {
+            mux := http.NewServeMux()
+            mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+                fmt.Fprintf(w, "OK - DB Connected: %t, RPCClient Connected: %t", db.connected, rpcClient.connected)
+            })
 
-	// Output:
-	// Resolved printer: Printing document
-	// -------
-	// Document id: "idInvoked"
-	// Document description: "A document description"
-	// Document printer: "Printing document"
-	// Document size: 100
-	// Document page: 42
-	// Document name: "A simple string"
-	// Document read count: 32
-	// -------
-	// Document id: ""
-	// Document description: "A document description"
-	// Document printer: "Printing document"
-	// Document size: 0
-	// Document page: 42
-	// Document name: "A simple string"
-	// Document read count: 32
-	// -------
-	// Document id: ""
-	// Document description: "A document description"
-	// Document printer: "Printing document"
-	// Document size: 0
-	// Document page: 42
-	// Document name: "A simple string"
-	// Document read count: 32
+            addr := fmt.Sprintf(":%d", conf.HTTPServerPort)
+            server := &http.Server{
+                Addr:    addr,
+                Handler: mux,
+            }
+
+            lc.Add(lifecycle.NewFuncService(func(ctx context.Context) error {
+                log.Printf("Starting HTTP server on %s", addr)
+                if err := server.ListenAndServe(); err != http.ErrServerClosed {
+                    return err
+                }
+                return nil
+            }).WithStop(server.Shutdown).WithName("http-server"))
+
+            return server
+        },
+    ); err != nil {
+        log.Fatal(err)
+    }
 }
 ```
 
-## Eager Dependency Building
+### Advanced Usage
 
-The `Build` and `BuildContext` methods allow you to eagerly instantiate all provided dependencies at once. This is useful for:
-
-- Application startup initialization
-- Validating that all dependencies can be created successfully
-- Pre-warming expensive dependencies
-- Ensuring deterministic dependency creation order
+#### Manual Lifecycle Management
 
 ```go
-func ExampleBuild() {
-	inj := inject.New()
+type Config struct {
+    Port        int
+    DatabaseURL string
+}
 
-	// Provide dependencies
-	if err := inj.Provide(
-		func() string { return "config-value" },
-		func() int { return 42 },
-		func(s string) Printer {
-			fmt.Printf("Creating printer with config: %s\n", s)
-			return &SimplePrinter{}
-		},
-	); err != nil {
-		panic(err)
-	}
+lc := lifecycle.New()
 
-	// Build all dependencies eagerly
-	if err := inj.Build(); err != nil {
-		panic(err)
-	}
+// Provide dependencies
+err := lc.Provide(
+    func() *Config {
+        return &Config{
+            Port:        8080,
+            DatabaseURL: "postgres://localhost:5432/myapp",
+        }
+    },
+    func(conf *Config, lc *lifecycle.Lifecycle) *Database {
+        db := &Database{}
+        lc.Add(lifecycle.NewFuncActor(
+            func(_ context.Context) error {
+                log.Printf("Connecting to database: %s", conf.DatabaseURL)
+                return db.Connect()
+            },
+            func(_ context.Context) error {
+                return db.Close()
+            },
+        ).WithName("database"))
+        return db
+    },
+    setupHTTPServer,
+    lifecycle.SetupSignal,
+)
 
-	fmt.Println("All dependencies built successfully!")
+// Start all services
+if err := lc.Serve(context.Background()); err != nil {
+    log.Fatal(err)
+}
+```
 
-	// All dependencies are now instantiated and ready to use
-	var printer Printer
-	if err := inj.Resolve(&printer); err != nil {
-		panic(err)
-	}
+#### Service Collections
 
-	// Output:
-	// Creating printer with config: config-value
-	// All dependencies built successfully!
+You can group related setup functions:
+
+```go
+var setupHTTPServer = []any{
+    func() *HTTPConfig { return &HTTPConfig{Port: 8080} },
+    func(lc *lifecycle.Lifecycle, conf *HTTPConfig) *http.Server {
+        server := &http.Server{Addr: fmt.Sprintf(":%d", conf.Port)}
+        lc.Add(lifecycle.NewFuncService(func(ctx context.Context) error {
+            return server.ListenAndServe()
+        }).WithStop(server.Shutdown).WithName("http"))
+        return server
+    },
+}
+
+// Use in lifecycle
+lc.Provide(setupHTTPServer)
+```
+
+### Configuration
+
+#### Timeouts
+
+```go
+import "time"
+
+lc := lifecycle.New().
+    WithStopTimeout(60 * time.Second).     // Total shutdown timeout
+    WithStopEachTimeout(10 * time.Second)  // Per-actor shutdown timeout
+```
+
+#### Custom Logging
+
+```go
+import (
+    "log/slog"
+    "os"
+)
+
+logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+lc := lifecycle.New().WithLogger(logger)
+```
+
+#### Signal Handling
+
+```go
+import "syscall"
+
+// Custom signals
+lc.Provide(lifecycle.SetupSignalWith(syscall.SIGUSR1, syscall.SIGUSR2))
+
+// Default signals (SIGINT, SIGTERM)
+lc.Provide(lifecycle.SetupSignal)
+```
+
+### Error Handling and Monitoring
+
+The lifecycle system provides comprehensive monitoring:
+
+- **Startup Errors**: Any actor failing to start stops the entire lifecycle
+- **Service Monitoring**: Long-running services are monitored for completion or errors
+- **Graceful Shutdown**: When any service completes or signal is received, all actors are stopped in reverse order
+- **Timeout Handling**: Configurable timeouts for shutdown operations
+- **Stop Cause**: Context includes information about why shutdown was initiated
+
+```go
+// Access stop cause in actor shutdown
+func(ctx context.Context) error {
+    cause := lifecycle.GetStopCause(ctx)
+    if cause != nil {
+        log.Printf("Shutting down due to: %v", cause)
+    }
+    return cleanup()
+}
+```
+
+## Important Notes
+
+### Special Parameter Types
+
+The inject package handles certain parameter types in special ways:
+
+- **`context.Context`**: Not managed by the injector. Cannot be used as a return type. This is the context passed to dependency resolution methods (like `InvokeContext`, `ResolveContext`) and will be automatically passed to constructor functions that declare it as a parameter.
+
+- **`error`**: Not managed by the injector. Can only be used as a return type, and must be the last return type if present. If a constructor returns an error, the injection will fail and propagate the error.
+
+### Constructor Function Rules
+
+- Constructor functions can have multiple return values, but error must be the last one if present
+- All non-error return values will be registered as available dependencies
+- Constructor functions are called lazily when their return types are needed
+- Use `Build()` or `BuildContext()` to eagerly instantiate all dependencies
+
+### Error Handling
+
+```go
+// Constructor with error handling
+func NewDatabase(conf *Config) (*Database, error) {
+    db, err := sql.Open("postgres", conf.DatabaseURL)
+    if err != nil {
+        return nil, errors.Wrap(err, "failed to open database")
+    }
+    return &Database{db: db}, nil
+}
+
+// context.Context comes from the calling context (e.g., injector.InvokeContext(ctx, ...))
+func NewRPCClient(ctx context.Context, conf *Config) (*RPCClient, error) {
+    client, err := rpc.DialContext(ctx, conf.ServerURL)
+    if err != nil {
+        return nil, errors.Wrap(err, "failed to dial RPC server")
+    }
+    return client, nil
 }
 ```

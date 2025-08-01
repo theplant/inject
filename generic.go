@@ -1,5 +1,7 @@
 package inject
 
+import "context"
+
 // Resolve resolves a dependency from the injector.
 func Resolve[T any](inj interface{ Resolve(...any) error }) (T, error) {
 	var t T
@@ -19,19 +21,23 @@ func MustResolve[T any](inj interface{ Resolve(...any) error }) T {
 }
 
 func ResolveContext[T any](
-	ctx Context,
-	inj interface{ ResolveContext(Context, ...any) error },
+	ctx context.Context,
+	inj interface {
+		ResolveContext(context.Context, ...any) error
+	},
 ) (T, error) {
 	var t T
-	if err := inj.ResolveContext(Context(ctx), &t); err != nil {
+	if err := inj.ResolveContext(ctx, &t); err != nil {
 		return t, err
 	}
 	return t, nil
 }
 
 func MustResolveContext[T any](
-	ctx Context,
-	inj interface{ ResolveContext(Context, ...any) error },
+	ctx context.Context,
+	inj interface {
+		ResolveContext(context.Context, ...any) error
+	},
 ) T {
 	t, err := ResolveContext[T](ctx, inj)
 	if err != nil {

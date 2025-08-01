@@ -149,3 +149,46 @@ func ExampleInjector() {
 	// Document name: "A simple string"
 	// Document read count: 32
 }
+
+// ExampleInjector_Build demonstrates eager dependency building.
+// The Build and BuildContext methods allow you to eagerly instantiate all provided dependencies at once.
+// This is useful for:
+// - Application startup initialization
+// - Validating that all dependencies can be created successfully
+// - Pre-warming expensive dependencies
+// - Ensuring deterministic dependency creation order
+func ExampleInjector_Build() {
+	inj := inject.New()
+
+	// Provide dependencies
+	if err := inj.Provide(
+		func() string { return "config-value" },
+		func() int { return 42 },
+		func(s string) Printer {
+			fmt.Printf("Creating printer with config: %s\n", s)
+			return &SimplePrinter{}
+		},
+	); err != nil {
+		panic(err)
+	}
+
+	// Build all dependencies eagerly
+	if err := inj.Build(); err != nil {
+		panic(err)
+	}
+
+	fmt.Println("All dependencies built successfully!")
+
+	// All dependencies are now instantiated and ready to use
+	var printer Printer
+	if err := inj.Resolve(&printer); err != nil {
+		panic(err)
+	}
+
+	fmt.Println("Resolved printer:", printer.Print())
+
+	// Output:
+	// Creating printer with config: config-value
+	// All dependencies built successfully!
+	// Resolved printer: Printing document
+}

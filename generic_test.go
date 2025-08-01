@@ -50,7 +50,7 @@ func TestGenericMustResolve(t *testing.T) {
 func TestGenericResolveContext(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		injector := New()
-		err := injector.Provide(func(ctx Context) string {
+		err := injector.Provide(func(ctx context.Context) string {
 			return "context-value"
 		})
 		require.NoError(t, err)
@@ -73,7 +73,7 @@ func TestGenericResolveContext(t *testing.T) {
 func TestGenericMustResolveContext(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		injector := New()
-		err := injector.Provide(func(ctx Context) float64 {
+		err := injector.Provide(func(ctx context.Context) float64 {
 			return 3.14
 		})
 		require.NoError(t, err)

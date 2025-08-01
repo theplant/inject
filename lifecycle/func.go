@@ -129,7 +129,7 @@ func (b *FuncService) Stop(ctx context.Context) error {
 	case <-b.doneC:
 		return nil
 	case <-ctx.Done():
-		return errors.WithStack(context.Cause(ctx))
+		return errors.WithStack(ctx.Err())
 	}
 }
 
