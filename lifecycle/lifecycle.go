@@ -98,7 +98,7 @@ func (lc *Lifecycle) WithName(name string) *Lifecycle {
 	return lc
 }
 
-// WithStopActorTimeout sets the timeout for stop operation for every actor.
+// WithStopActorTimeout sets the timeout duration for stopping each actor.
 func (lc *Lifecycle) WithStopActorTimeout(timeout time.Duration) *Lifecycle {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
