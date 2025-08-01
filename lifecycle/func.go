@@ -8,6 +8,8 @@ import (
 	"github.com/pkg/errors"
 )
 
+var _ Actor = (*FuncActor)(nil)
+
 // FuncActor wraps start and stop functions into an Actor implementation.
 // This is useful for creating actors from simple functions without defining new types.
 type FuncActor struct {
@@ -50,6 +52,8 @@ func (f *FuncActor) Stop(ctx context.Context) error {
 	}
 	return nil
 }
+
+var _ Service = (*FuncService)(nil)
 
 // FuncService runs a function in a background goroutine and implements Service interface.
 // Useful for long-running background tasks that need to be monitored.
@@ -125,7 +129,7 @@ func (b *FuncService) Stop(ctx context.Context) error {
 	case <-b.doneC:
 		return nil
 	case <-ctx.Done():
-		return context.Cause(ctx)
+		return errors.WithStack(context.Cause(ctx))
 	}
 }
 
