@@ -33,7 +33,7 @@ func OpenDB(ctx context.Context, name string) (*DB, error) {
 	return &DB{Name: name, Payload: payload}, nil
 }
 
-func SetupDB(ctx inject.Context, lc *Lifecycle) (*DB, error) {
+func SetupDB(ctx context.Context, lc *Lifecycle) (*DB, error) {
 	db, err := OpenDB(ctx, "test_db")
 	if err != nil {
 		return nil, err

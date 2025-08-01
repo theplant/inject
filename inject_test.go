@@ -396,7 +396,7 @@ func TestResolveContext(t *testing.T) {
 		type contextKey string
 		const key contextKey = "testKey"
 
-		err := injector.Provide(func(ctx Context) string {
+		err := injector.Provide(func(ctx context.Context) string {
 			require.NotNil(t, ctx)
 			if val := ctx.Value(key); val != nil {
 				return val.(string)
@@ -416,7 +416,7 @@ func TestResolveContext(t *testing.T) {
 	// Test with background context using new injector
 	{
 		injector := New()
-		err := injector.Provide(func(ctx Context) string {
+		err := injector.Provide(func(ctx context.Context) string {
 			require.NotNil(t, ctx)
 			return "context-aware"
 		})
@@ -433,7 +433,7 @@ func TestResolveContext(t *testing.T) {
 		injector := New()
 		testErr := errors.New("test error")
 
-		err := injector.Provide(func(ctx Context) (string, error) {
+		err := injector.Provide(func(ctx context.Context) (string, error) {
 			select {
 			case <-time.After(100 * time.Millisecond):
 				return "completed", nil
@@ -454,11 +454,11 @@ func TestResolveContext(t *testing.T) {
 	// Test multiple values and nested dependencies
 	{
 		injector := New()
-		err := injector.Provide(func(ctx Context) string {
+		err := injector.Provide(func(ctx context.Context) string {
 			return "dependency"
 		})
 		require.NoError(t, err)
-		err = injector.Provide(func(ctx Context, dep string) int {
+		err = injector.Provide(func(ctx context.Context, dep string) int {
 			require.Equal(t, "dependency", dep)
 			return 42
 		})
@@ -507,7 +507,7 @@ func TestResolveContext(t *testing.T) {
 			return "no-value"
 		}
 
-		err := injector.Provide(func(ctx Context) string {
+		err := injector.Provide(func(ctx context.Context) string {
 			// Pass Context to function expecting context.Context
 			return processWithContext(ctx)
 		})
@@ -528,12 +528,12 @@ func TestResolveContext(t *testing.T) {
 		type ctxKeyActual struct{}
 
 		// Provide a Context (this should be ignored)
-		err := injector.Provide(func() Context {
+		err := injector.Provide(func() context.Context {
 			return context.WithValue(context.Background(), ctxKeyProvided{}, "ignored")
 		})
 		require.ErrorIs(t, err, ErrTypeNotAllowed)
 
-		err = injector.Provide(func(ctx Context) string {
+		err = injector.Provide(func(ctx context.Context) string {
 			// Should get the actual inject context, not the provided one
 			if val := ctx.Value(ctxKeyActual{}); val != nil {
 				return val.(string)
@@ -563,14 +563,14 @@ func TestApplyContext(t *testing.T) {
 		const key ctxKey = "applyKey"
 		const numKey ctxKey = "numKey"
 
-		err := injector.Provide(func(ctx Context) string {
+		err := injector.Provide(func(ctx context.Context) string {
 			if val := ctx.Value(key); val != nil {
 				return val.(string)
 			}
 			return "default-value"
 		})
 		require.NoError(t, err)
-		err = injector.Provide(func(ctx Context) int {
+		err = injector.Provide(func(ctx context.Context) int {
 			if val := ctx.Value(numKey); val != nil {
 				return val.(int)
 			}
@@ -594,14 +594,14 @@ func TestApplyContext(t *testing.T) {
 		type contextKey string
 		const key contextKey = "applyKey"
 
-		err := injector.Provide(func(ctx Context) string {
+		err := injector.Provide(func(ctx context.Context) string {
 			if val := ctx.Value(key); val != nil {
 				return val.(string)
 			}
 			return "default-value"
 		})
 		require.NoError(t, err)
-		err = injector.Provide(func(ctx Context) int {
+		err = injector.Provide(func(ctx context.Context) int {
 			if val := ctx.Value("numKey"); val != nil {
 				return val.(int)
 			}
@@ -624,7 +624,7 @@ func TestInvokeContext(t *testing.T) {
 		type contextKey string
 		const key contextKey = "invokeKey"
 
-		err := injector.Provide(func(ctx Context) string {
+		err := injector.Provide(func(ctx context.Context) string {
 			if val := ctx.Value(key); val != nil {
 				return val.(string)
 			}
@@ -648,7 +648,7 @@ func TestInvokeContext(t *testing.T) {
 		type contextKey string
 		const key contextKey = "invokeKey"
 
-		err := injector.Provide(func(ctx Context) string {
+		err := injector.Provide(func(ctx context.Context) string {
 			if val := ctx.Value(key); val != nil {
 				return val.(string)
 			}
@@ -670,7 +670,7 @@ func TestInvokeContext(t *testing.T) {
 		type contextKey string
 		const key contextKey = "invokeKey"
 
-		err := injector.Provide(func(ctx Context) string {
+		err := injector.Provide(func(ctx context.Context) string {
 			if val := ctx.Value(key); val != nil {
 				return val.(string)
 			}
@@ -679,7 +679,7 @@ func TestInvokeContext(t *testing.T) {
 		require.NoError(t, err)
 
 		ctx := context.WithValue(context.Background(), key, "invoke-value")
-		results, err := injector.InvokeContext(ctx, func(s string, ctx Context) string {
+		results, err := injector.InvokeContext(ctx, func(s string, ctx context.Context) string {
 			if val := ctx.Value(key); val != nil {
 				return s + "-" + val.(string)
 			}
@@ -694,20 +694,20 @@ func TestInvokeContext(t *testing.T) {
 func TestTypeNotAllowed(t *testing.T) {
 	injector := New()
 
-	// Test that providing inject.Context is not allowed
-	err := injector.Provide(func() Context {
+	// Test that providing context.Context is not allowed
+	err := injector.Provide(func() context.Context {
 		return context.Background()
 	})
 	require.ErrorIs(t, err, ErrTypeNotAllowed)
 
-	// Test that providing inject.Context with other types is also not allowed
-	err = injector.Provide(func() (string, Context) {
+	// Test that providing context.Context with other types is also not allowed
+	err = injector.Provide(func() (string, context.Context) {
 		return "test", context.Background()
 	})
 	require.ErrorIs(t, err, ErrTypeNotAllowed)
 
 	// Test that normal context.Context usage in constructors still works
-	err = injector.Provide(func(ctx Context) string {
+	err = injector.Provide(func(ctx context.Context) string {
 		return "works"
 	})
 	require.NoError(t, err)
@@ -726,10 +726,10 @@ func TestTypeNotAllowed(t *testing.T) {
 		require.ErrorIs(t, err, ErrTypeNotAllowed)
 	}
 
-	// Test that inject.Context type in Invoke function parameters is not allowed
+	// Test that context.Context type in Invoke function parameters is not allowed
 	{
 		injector3 := New()
-		_, err := injector3.Invoke(func(ctx Context, err error) string {
+		_, err := injector3.Invoke(func(ctx context.Context, err error) string {
 			return "should not work"
 		})
 		require.ErrorIs(t, err, ErrTypeNotAllowed)
@@ -750,7 +750,7 @@ func TestTypeNotAllowed(t *testing.T) {
 	{
 		injector5 := New()
 		type StructWithContextField struct {
-			Ctx Context `inject:""`
+			Ctx context.Context `inject:""`
 		}
 		structWithContext := &StructWithContextField{}
 		err := injector5.Apply(structWithContext)
@@ -761,9 +761,9 @@ func TestTypeNotAllowed(t *testing.T) {
 	{
 		injector6 := New()
 		type StructWithoutInjectTags struct {
-			Err error   // No inject tag, should be allowed
-			Ctx Context // No inject tag, should be allowed
-			Val string  `inject:""`
+			Err error           // No inject tag, should be allowed
+			Ctx context.Context // No inject tag, should be allowed
+			Val string          `inject:""`
 		}
 		err := injector6.Provide(func() string { return "test-value" })
 		require.NoError(t, err)
@@ -1249,9 +1249,9 @@ func TestWithSkipErrTypeNotProvided(t *testing.T) {
 
 	t.Run("WithSkipErrTypeNotProvided mixed with regular errors", func(t *testing.T) {
 		type TestStruct struct {
-			ErrorTypeField error   `inject:""` // Should cause ErrTypeNotAllowed
-			MissingValue   int     `inject:""` // Should be skipped
-			ContextField   Context `inject:""` // Should cause ErrTypeNotAllowed
+			ErrorTypeField error           `inject:""` // Should cause ErrTypeNotAllowed
+			MissingValue   int             `inject:""` // Should be skipped
+			ContextField   context.Context `inject:""` // Should cause ErrTypeNotAllowed
 		}
 
 		injector := New()

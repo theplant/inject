@@ -47,10 +47,16 @@ import (
     "log"
     "net/http"
 
+    "github.com/pkg/errors"
     "github.com/theplant/inject/lifecycle"
 )
 
-// Example database connection
+type Config struct {
+    HTTPServerPort int
+    DatabaseURL    string
+    RPCServerURL   string
+}
+
 type Database struct {
     connected bool
 }
@@ -67,39 +73,87 @@ func (db *Database) Close() error {
     return nil
 }
 
+type RPCClient struct {
+    connected bool
+}
+
+func (c *RPCClient) Close() error {
+    c.connected = false
+    log.Println("RPC client disconnected")
+    return nil
+}
+
+func DialContext(ctx context.Context, serverURL string) (*RPCClient, error) {
+    if serverURL == "" {
+        return nil, errors.New("server URL cannot be empty")
+    }
+
+    client := &RPCClient{
+        connected: true,
+    }
+
+    log.Printf("RPC client connected to %s", serverURL)
+    return client, nil
+}
+
+func CreateRPCClient(ctx context.Context, lc *lifecycle.Lifecycle, conf *Config) (*RPCClient, error) {
+    client, err := DialContext(ctx, conf.RPCServerURL)
+    if err != nil {
+        return nil, err
+    }
+
+    lc.Add(lifecycle.NewFuncActor(
+        nil,
+        func(_ context.Context) error {
+            return client.Close()
+        },
+    ).WithName("rpc-client"))
+
+    return client, nil
+}
+
 func main() {
     if err := lifecycle.Serve(context.Background(),
-        // Signal handling for graceful shutdown
         lifecycle.SetupSignal,
 
-        // Simple actor: database setup
-        func(lc *lifecycle.Lifecycle) *Database {
+        func() *Config {
+            return &Config{
+                HTTPServerPort: 8080,
+                DatabaseURL:    "postgres://localhost:5432/myapp",
+                RPCServerURL:   "127.0.0.1:1088",
+            }
+        },
+
+        CreateRPCClient,
+
+        func(lc *lifecycle.Lifecycle, conf *Config) *Database {
             db := &Database{}
             lc.Add(lifecycle.NewFuncActor(
-                func(ctx context.Context) error {
+                func(_ context.Context) error {
+                    log.Printf("Connecting to database: %s", conf.DatabaseURL)
                     return db.Connect()
                 },
-                func(ctx context.Context) error {
+                func(_ context.Context) error {
                     return db.Close()
                 },
             ).WithName("database"))
             return db
         },
 
-        // Long-running service: HTTP server
-        func(lc *lifecycle.Lifecycle, db *Database) *http.Server {
+        func(lc *lifecycle.Lifecycle, conf *Config, db *Database, rpcClient *RPCClient) *http.Server {
             mux := http.NewServeMux()
             mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-                fmt.Fprintf(w, "OK - DB Connected: %t", db.connected)
+                fmt.Fprintf(w, "OK - DB Connected: %t, RPCClient Connected: %t", db.connected, rpcClient.connected)
             })
 
+            addr := fmt.Sprintf(":%d", conf.HTTPServerPort)
             server := &http.Server{
-                Addr:    ":8080",
+                Addr:    addr,
                 Handler: mux,
             }
 
             lc.Add(lifecycle.NewFuncService(func(ctx context.Context) error {
-                log.Println("Starting HTTP server on :8080")
+                log.Printf("Starting HTTP server on %s", addr)
                 if err := server.ListenAndServe(); err != http.ErrServerClosed {
                     return err
                 }
@@ -240,7 +294,7 @@ func(ctx context.Context) error {
 
 The inject package handles certain parameter types in special ways:
 
-- **`inject.Context`**: Not managed by the injector. This is a context type that you pass to dependency resolution methods and constructor functions to provide context for the dependency resolution process.
+- **`context.Context`**: Not managed by the injector. Cannot be used as a return type. This is the context passed to dependency resolution methods (like `InvokeContext`, `ResolveContext`) and will be automatically passed to constructor functions that declare it as a parameter.
 
 - **`error`**: Not managed by the injector. Can only be used as a return type, and must be the last return type if present. If a constructor returns an error, the injection will fail and propagate the error.
 
@@ -263,9 +317,8 @@ func NewDatabase(conf *Config) (*Database, error) {
     return &Database{db: db}, nil
 }
 
-// Using inject.Context for dependency resolution context
-func NewRPCClient(ctx inject.Context, conf *Config) (*RPCClient, error) {
-    // ctx provides context for the dependency resolution process
+// context.Context comes from the calling context (e.g., injector.InvokeContext(ctx, ...))
+func NewRPCClient(ctx context.Context, conf *Config) (*RPCClient, error) {
     client, err := rpc.DialContext(ctx, conf.ServerURL)
     if err != nil {
         return nil, errors.Wrap(err, "failed to dial RPC server")

@@ -26,11 +26,9 @@ var (
 	ErrInvalidApplyTarget  = errors.New("apply only accepts a struct")
 )
 
-type Context context.Context
-
 var (
 	typeError   = reflect.TypeOf((*error)(nil)).Elem()
-	typeContext = reflect.TypeOf((*Context)(nil)).Elem()
+	typeContext = reflect.TypeOf((*context.Context)(nil)).Elem()
 )
 
 func IsTypeAllowed(typ reflect.Type) bool {
@@ -117,7 +115,7 @@ func (inj *Injector) unsafeProvide(ctor any) error {
 	return nil
 }
 
-func (inj *Injector) invoke(ctx Context, f any) ([]reflect.Value, error) {
+func (inj *Injector) invoke(ctx context.Context, f any) ([]reflect.Value, error) {
 	rt := reflect.TypeOf(f)
 	if rt.Kind() != reflect.Func {
 		return nil, errors.Wrap(ErrInvalidInvokeTarget, "f is not a function")
@@ -165,7 +163,7 @@ func (inj *Injector) invoke(ctx Context, f any) ([]reflect.Value, error) {
 	return outs, nil
 }
 
-func (inj *Injector) resolve(ctx Context, rt reflect.Type) (reflect.Value, error) {
+func (inj *Injector) resolve(ctx context.Context, rt reflect.Type) (reflect.Value, error) {
 	inj.mu.RLock()
 	rv := inj.values[rt]
 	if rv.IsValid() {
@@ -226,7 +224,7 @@ func (inj *Injector) Apply(val any) error {
 	return inj.ApplyContext(context.Background(), val)
 }
 
-func (inj *Injector) ApplyContext(ctx Context, val any) error {
+func (inj *Injector) ApplyContext(ctx context.Context, val any) error {
 	rv := unwrapPtr(reflect.ValueOf(val))
 	if rv.Kind() != reflect.Struct {
 		return errors.Wrap(ErrInvalidApplyTarget, "val is not a struct")
@@ -239,7 +237,7 @@ var (
 	TagValueOptional = "optional"
 )
 
-func (inj *Injector) applyStruct(ctx Context, rv reflect.Value) error {
+func (inj *Injector) applyStruct(ctx context.Context, rv reflect.Value) error {
 	skipErrTypeNotProvided, _ := ctx.Value(ctxKeySkipErrTypeNotProvided{}).(bool)
 	if skipErrTypeNotProvided {
 		ctx = context.WithValue(ctx, ctxKeySkipErrTypeNotProvided{}, false)
@@ -331,7 +329,7 @@ func (inj *Injector) Invoke(f any) ([]any, error) {
 	return inj.InvokeContext(context.Background(), f)
 }
 
-func (inj *Injector) InvokeContext(ctx Context, f any) ([]any, error) {
+func (inj *Injector) InvokeContext(ctx context.Context, f any) ([]any, error) {
 	results, err := inj.invoke(ctx, f)
 	if err != nil {
 		return nil, err
@@ -368,11 +366,11 @@ type ctxKeySkipErrTypeNotProvided struct{}
 //
 //	ctx := WithSkipErrTypeNotProvided(context.Background())
 //	err := injector.ApplyContext(ctx, &service) // Won't fail if Config or Logger missing
-func WithSkipErrTypeNotProvided(ctx Context) Context {
+func WithSkipErrTypeNotProvided(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxKeySkipErrTypeNotProvided{}, true)
 }
 
-func (inj *Injector) ResolveContext(ctx Context, refs ...any) error {
+func (inj *Injector) ResolveContext(ctx context.Context, refs ...any) error {
 	skipErrTypeNotProvided, _ := ctx.Value(ctxKeySkipErrTypeNotProvided{}).(bool)
 	if skipErrTypeNotProvided {
 		ctx = context.WithValue(ctx, ctxKeySkipErrTypeNotProvided{}, false)
@@ -406,7 +404,7 @@ func (inj *Injector) Build(ctors ...any) error {
 // BuildContext automatically resolves all provided types.
 // This will trigger the creation of all registered constructors,
 // ensuring that all dependencies are properly instantiated.
-func (inj *Injector) BuildContext(ctx Context, ctors ...any) error {
+func (inj *Injector) BuildContext(ctx context.Context, ctors ...any) error {
 	if len(ctors) > 0 {
 		if err := inj.Provide(ctors...); err != nil {
 			return err
