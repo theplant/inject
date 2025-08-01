@@ -153,12 +153,12 @@ func TestFuncService_StopBehavior(t *testing.T) {
 			taskStarted <- true
 			// Wait for permission to finish or cancellation
 			<-ctx.Done()
-			return errors.WithStack(context.Cause(ctx))
+			return errors.WithStack(ctx.Err())
 		},
 	).WithStop(func(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
-			return errors.WithStack(context.Cause(ctx))
+			return errors.WithStack(ctx.Err())
 		case stopCalled <- true:
 			return nil
 		}
@@ -208,12 +208,12 @@ func TestFuncService_StopTimeout(t *testing.T) {
 			taskStarted <- true
 			// Task responds to context cancellation
 			<-ctx.Done()
-			return errors.WithStack(context.Cause(ctx))
+			return errors.WithStack(ctx.Err())
 		},
 	).WithStop(func(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
-			return errors.WithStack(context.Cause(ctx))
+			return errors.WithStack(ctx.Err())
 		case <-time.After(100 * time.Millisecond):
 			stopCalled <- true
 			return nil

@@ -84,6 +84,38 @@ func TestSetupSignal_Integration(t *testing.T) {
 	require.Len(t, lc.actors, 1)
 }
 
+func TestSignalService_WithName(t *testing.T) {
+	signal := NewSignalService()
+	result := signal.WithName("custom-signal")
+
+	require.Equal(t, signal, result)
+	require.Equal(t, "custom-signal", signal.GetName())
+}
+
+func TestSetupSignalWith(t *testing.T) {
+	t.Run("with custom signals", func(t *testing.T) {
+		lc := New()
+
+		// Test with custom signals
+		setupFunc := SetupSignalWith(syscall.SIGTERM, syscall.SIGUSR1)
+		signal := setupFunc(lc)
+
+		require.NotNil(t, signal)
+		require.Len(t, lc.actors, 1)
+	})
+
+	t.Run("with no signals (defaults)", func(t *testing.T) {
+		lc := New()
+
+		// Test with no signals (should default to SIGINT, SIGTERM)
+		setupFunc := SetupSignalWith()
+		signal := setupFunc(lc)
+
+		require.NotNil(t, signal)
+		require.Len(t, lc.actors, 1)
+	})
+}
+
 // TestSignalService_RealSignals tests that SignalService actually responds to SIGINT and SIGTERM
 func TestSignalService_RealSignals(t *testing.T) {
 	if testing.Short() {

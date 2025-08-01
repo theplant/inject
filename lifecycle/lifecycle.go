@@ -15,8 +15,11 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// DefaultStopTimeout is the default timeout for stop operations.
+// DefaultStopTimeout is the default timeout for stopping all actors during shutdown.
 var DefaultStopTimeout = 30 * time.Second
+
+// DefaultStopEachTimeout is the default timeout for stopping each individual actor.
+var DefaultStopEachTimeout = 5 * time.Second
 
 // ErrServed is returned when Serve is called.
 var ErrServed = errors.New("lifecycle already served")
@@ -65,20 +68,22 @@ type Lifecycle struct {
 	*inject.Injector // Embedded injector for dependency management
 	*FuncService
 
-	actors           []Actor
-	stopActorTimeout time.Duration
-	served           atomic.Bool
-	mu               sync.RWMutex
-	logger           *slog.Logger
+	actors          []Actor
+	stopTimeout     time.Duration // Global timeout for stopping all actors
+	stopEachTimeout time.Duration // Timeout for each individual actor
+	served          atomic.Bool
+	mu              sync.RWMutex
+	logger          *slog.Logger
 }
 
 // New creates a new Lifecycle instance with embedded injector and default stop timeout.
 func New() *Lifecycle {
 	inj := inject.New()
 	lc := &Lifecycle{
-		Injector:         inj,
-		stopActorTimeout: DefaultStopTimeout,
-		logger:           slog.Default(),
+		Injector:        inj,
+		stopTimeout:     DefaultStopTimeout,
+		stopEachTimeout: DefaultStopEachTimeout,
+		logger:          slog.Default(),
 	}
 	lc.FuncService = NewFuncService(func(ctx context.Context) error {
 		return lc.Serve(ctx)
@@ -92,17 +97,37 @@ func (lc *Lifecycle) WithStop(stop func(ctx context.Context) error) *Lifecycle {
 	panic("this method is not supported for Lifecycle")
 }
 
+// IsStarted returns true if the lifecycle has been started.
+func (lc *Lifecycle) IsStarted() bool {
+	return lc.FuncService.IsStarted() || lc.served.Load()
+}
+
+func (lc *Lifecycle) Start(ctx context.Context) error {
+	if err := lc.BuildContext(ctx); err != nil {
+		return err
+	}
+	return lc.FuncService.Start(ctx)
+}
+
 // WithName sets the name for the lifecycle.
 func (lc *Lifecycle) WithName(name string) *Lifecycle {
 	lc.FuncService.WithName(name)
 	return lc
 }
 
-// WithStopActorTimeout sets the timeout duration for stopping each actor.
-func (lc *Lifecycle) WithStopActorTimeout(timeout time.Duration) *Lifecycle {
+// WithStopTimeout sets the global timeout duration for stopping all actors during shutdown.
+func (lc *Lifecycle) WithStopTimeout(timeout time.Duration) *Lifecycle {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	lc.stopActorTimeout = timeout
+	lc.stopTimeout = timeout
+	return lc
+}
+
+// WithStopEachTimeout sets the timeout duration for stopping each individual actor.
+func (lc *Lifecycle) WithStopEachTimeout(timeout time.Duration) *Lifecycle {
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	lc.stopEachTimeout = timeout
 	return lc
 }
 
@@ -131,26 +156,21 @@ func Add[A Actor](lc *Lifecycle, actor A) A {
 
 // LazyAdd returns a function that when called will create an actor and add it to the lifecycle.
 // This enables lazy initialization where the actor is only created when actually needed.
-func LazyAdd[A Actor](lc *Lifecycle, f func() A) func() A {
-	return func() A {
+func LazyAdd[A Actor](f func() A) func(lc *Lifecycle) A {
+	return func(lc *Lifecycle) A {
 		return Add(lc, f())
 	}
 }
 
-// AddE is a helper function to add an actor to the lifecycle and return it.
-func AddE[A Actor](lc *Lifecycle, actor A, err error) (A, error) {
-	if err == nil {
-		lc.Add(actor)
-	}
-	return actor, err
-}
-
 // LazyAddE returns a function that when called will create an actor and add it to the lifecycle.
 // This enables lazy initialization with error handling where the actor is only created when needed.
-func LazyAddE[A Actor](lc *Lifecycle, f func() (A, error)) func() (A, error) {
-	return func() (A, error) {
+func LazyAddE[A Actor](f func() (A, error)) func(lc *Lifecycle) (A, error) {
+	return func(lc *Lifecycle) (A, error) {
 		actor, err := f()
-		return AddE(lc, actor, err)
+		if err == nil {
+			lc.Add(actor)
+		}
+		return actor, err
 	}
 }
 
@@ -187,14 +207,15 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 	}
 
 	// Automatically resolve all provided types with context
-	if err := lc.Injector.BuildContext(inject.Context(ctx), ctors...); err != nil {
+	if err := lc.BuildContext(ctx, ctors...); err != nil {
 		return err
 	}
 
 	lc.mu.RLock()
 	actors := slices.Clone(lc.actors)
 	logger := lc.logger
-	stopTimeout := lc.stopActorTimeout
+	stopTimeout := lc.stopTimeout
+	stopEachTimeout := lc.stopEachTimeout
 	lc.mu.RUnlock()
 
 	// Check for long-running services before starting actors
@@ -215,6 +236,14 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 
 	logger.InfoContext(ctx, "Starting lifecycle", "actor_count", len(actors), "service_count", len(services))
 
+	var stopCtx context.Context
+	var stopCancel context.CancelFunc
+	defer func() {
+		if stopCancel != nil {
+			stopCancel()
+		}
+	}()
+
 	// Start all actors with individual defer cleanup
 	for i, actor := range actors {
 		actorName := actorNames[i]
@@ -231,11 +260,13 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 
 		// Set up cleanup for this specific actor
 		defer func(actor Actor, actorName string) {
-			stopCtx, cancel := context.WithTimeout(context.Background(), stopTimeout)
-			defer cancel()
-
-			stopCtx = withStopCause(stopCtx, xerr)
-			if err := actor.Stop(stopCtx); err != nil {
+			if stopCtx == nil {
+				stopCtx, stopCancel = context.WithTimeout(context.Background(), stopTimeout)
+				stopCtx = withStopCause(stopCtx, xerr)
+			}
+			stopEachCtx, stopEachCancel := context.WithTimeout(stopCtx, stopEachTimeout)
+			defer stopEachCancel()
+			if err := actor.Stop(stopEachCtx); err != nil {
 				logger.ErrorContext(ctx, fmt.Sprintf("Failed to stop %s during cleanup", strings.ToLower(actorType)), "actor", actorName, "error", err)
 			} else {
 				logger.DebugContext(ctx, fmt.Sprintf("%s stopped successfully", actorType), "actor", actorName)
@@ -256,7 +287,6 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 		g.Go(func() error {
 			select {
 			case <-svc.Done():
-				// Service completed, check its error
 				err := svc.Err()
 				if err != nil {
 					logger.ErrorContext(gCtx, "Service completed with error", "actor", actorName, "error", err)
@@ -266,9 +296,9 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 				// Return special error to trigger lifecycle shutdown when service completes normally
 				return errors.WithStack(errServiceCompleted)
 			case <-gCtx.Done():
-				// Context cancelled or another service completed
-				logger.DebugContext(gCtx, "Service monitoring cancelled", "actor", actorName)
-				return errors.WithStack(context.Cause(gCtx))
+				err := errors.WithStack(gCtx.Err())
+				logger.DebugContext(gCtx, "Service monitoring cancelled", "actor", actorName, "error", err)
+				return err
 			}
 		})
 	}
@@ -289,6 +319,18 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 func Serve(ctx context.Context, ctors ...any) error {
 	lc := New()
 	return lc.Serve(ctx, ctors...)
+}
+
+// Start is a convenience function that creates a new Lifecycle instance, provides the constructors, and calls Start on it.
+func Start(ctx context.Context, ctors ...any) (*Lifecycle, error) {
+	lc := New()
+	if err := lc.Provide(ctors...); err != nil {
+		return nil, err
+	}
+	if err := lc.Start(ctx); err != nil {
+		return nil, err
+	}
+	return lc, nil
 }
 
 // getActorName returns a human-readable name for an actor, using Named interface if available

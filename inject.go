@@ -67,7 +67,7 @@ func (inj *Injector) SetParent(parent *Injector) error {
 	inj.mu.Lock()
 	defer inj.mu.Unlock()
 	if inj.parent != nil {
-		return ErrParentAlreadySet
+		return errors.WithStack(ErrParentAlreadySet)
 	}
 	inj.parent = parent
 	return nil
@@ -77,7 +77,7 @@ func (inj *Injector) unsafeProvide(ctor any) error {
 	rv := reflect.ValueOf(ctor)
 	rt := rv.Type()
 	if rt.Kind() != reflect.Func {
-		return ErrInvalidProvider
+		return errors.Wrap(ErrInvalidProvider, "ctor is not a function")
 	}
 
 	// Get valid output types with error position validation
@@ -87,7 +87,7 @@ func (inj *Injector) unsafeProvide(ctor any) error {
 	}
 
 	if len(outputTypes) == 0 {
-		return ErrInvalidProvider
+		return errors.Wrap(ErrInvalidProvider, "no valid output types")
 	}
 
 	provider := &provider{
@@ -120,7 +120,7 @@ func (inj *Injector) unsafeProvide(ctor any) error {
 func (inj *Injector) invoke(ctx Context, f any) ([]reflect.Value, error) {
 	rt := reflect.TypeOf(f)
 	if rt.Kind() != reflect.Func {
-		return nil, ErrInvalidInvokeTarget
+		return nil, errors.Wrap(ErrInvalidInvokeTarget, "f is not a function")
 	}
 
 	numIn := rt.NumIn()
@@ -229,7 +229,7 @@ func (inj *Injector) Apply(val any) error {
 func (inj *Injector) ApplyContext(ctx Context, val any) error {
 	rv := unwrapPtr(reflect.ValueOf(val))
 	if rv.Kind() != reflect.Struct {
-		return ErrInvalidApplyTarget
+		return errors.Wrap(ErrInvalidApplyTarget, "val is not a struct")
 	}
 	return inj.applyStruct(ctx, rv)
 }
