@@ -51,6 +51,61 @@ import (
     "github.com/theplant/inject/lifecycle"
 )
 
+func main() {
+    if err := lifecycle.Serve(context.Background(),
+        lifecycle.SetupSignal,
+
+        func() *Config {
+            return &Config{
+                HTTPServerPort: 8080,
+                DatabaseURL:    "postgres://localhost:5432/myapp",
+                RPCServerURL:   "127.0.0.1:1088",
+            }
+        },
+
+        CreateRPCClient,
+
+        func(lc *lifecycle.Lifecycle, conf *Config) *Database {
+            db := &Database{}
+            lc.Add(lifecycle.NewFuncActor(
+                func(_ context.Context) error {
+                    log.Printf("Connecting to database: %s", conf.DatabaseURL)
+                    return db.Connect()
+                },
+                func(_ context.Context) error {
+                    return db.Close()
+                },
+            ).WithName("database"))
+            return db
+        },
+
+        func(lc *lifecycle.Lifecycle, conf *Config, db *Database, rpcClient *RPCClient) *http.Server {
+            mux := http.NewServeMux()
+            mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+                fmt.Fprintf(w, "OK - DB Connected: %t, RPCClient Connected: %t", db.connected, rpcClient.connected)
+            })
+
+            addr := fmt.Sprintf(":%d", conf.HTTPServerPort)
+            server := &http.Server{
+                Addr:    addr,
+                Handler: mux,
+            }
+
+            lc.Add(lifecycle.NewFuncService(func(ctx context.Context) error {
+                log.Printf("Starting HTTP server on %s", addr)
+                if err := server.ListenAndServe(); err != http.ErrServerClosed {
+                    return err
+                }
+                return nil
+            }).WithStop(server.Shutdown).WithName("http-server"))
+
+            return server
+        },
+    ); err != nil {
+        log.Fatal(err)
+    }
+}
+
 type Config struct {
     HTTPServerPort int
     DatabaseURL    string
@@ -110,61 +165,6 @@ func CreateRPCClient(ctx context.Context, lc *lifecycle.Lifecycle, conf *Config)
     ).WithName("rpc-client"))
 
     return client, nil
-}
-
-func main() {
-    if err := lifecycle.Serve(context.Background(),
-        lifecycle.SetupSignal,
-
-        func() *Config {
-            return &Config{
-                HTTPServerPort: 8080,
-                DatabaseURL:    "postgres://localhost:5432/myapp",
-                RPCServerURL:   "127.0.0.1:1088",
-            }
-        },
-
-        CreateRPCClient,
-
-        func(lc *lifecycle.Lifecycle, conf *Config) *Database {
-            db := &Database{}
-            lc.Add(lifecycle.NewFuncActor(
-                func(_ context.Context) error {
-                    log.Printf("Connecting to database: %s", conf.DatabaseURL)
-                    return db.Connect()
-                },
-                func(_ context.Context) error {
-                    return db.Close()
-                },
-            ).WithName("database"))
-            return db
-        },
-
-        func(lc *lifecycle.Lifecycle, conf *Config, db *Database, rpcClient *RPCClient) *http.Server {
-            mux := http.NewServeMux()
-            mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-                fmt.Fprintf(w, "OK - DB Connected: %t, RPCClient Connected: %t", db.connected, rpcClient.connected)
-            })
-
-            addr := fmt.Sprintf(":%d", conf.HTTPServerPort)
-            server := &http.Server{
-                Addr:    addr,
-                Handler: mux,
-            }
-
-            lc.Add(lifecycle.NewFuncService(func(ctx context.Context) error {
-                log.Printf("Starting HTTP server on %s", addr)
-                if err := server.ListenAndServe(); err != http.ErrServerClosed {
-                    return err
-                }
-                return nil
-            }).WithStop(server.Shutdown).WithName("http-server"))
-
-            return server
-        },
-    ); err != nil {
-        log.Fatal(err)
-    }
 }
 ```
 
