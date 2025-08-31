@@ -1,6 +1,7 @@
 package inject
 
 import (
+	"cmp"
 	"context"
 	"maps"
 	"reflect"
@@ -413,14 +414,16 @@ func (inj *Injector) BuildContext(ctx context.Context, ctors ...any) error {
 
 	inj.mu.RLock()
 	var typesToResolve []reflect.Type
-	for typ := range inj.providers {
+	typeToSeq := make(map[reflect.Type]uint64)
+	for typ, provider := range inj.providers {
 		typesToResolve = append(typesToResolve, typ)
+		typeToSeq[typ] = provider.seq
 	}
 	inj.mu.RUnlock()
 
-	// Sort types by their string representation for stable order
+	// Sort types by their provider sequence for stable order based on registration sequence
 	slices.SortFunc(typesToResolve, func(a, b reflect.Type) int {
-		return strings.Compare(a.String(), b.String())
+		return cmp.Compare(typeToSeq[a], typeToSeq[b])
 	})
 
 	for _, ty := range typesToResolve {
