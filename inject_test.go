@@ -1100,8 +1100,8 @@ func TestBuild(t *testing.T) {
 			err = injector.Build()
 			require.NoError(t, err)
 
-			// Order should be consistent (alphabetical by type name)
-			expected := []string{"bool", "int", "string"}
+			// Order should be consistent (by provider registration sequence)
+			expected := []string{"string", "int", "bool"}
 			require.Equal(t, expected, resolved)
 		}
 	})
