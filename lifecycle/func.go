@@ -53,6 +53,11 @@ func (f *FuncActor) Stop(ctx context.Context) error {
 	return nil
 }
 
+// acquired resources during construction and needs cleanup regardless of whether Start is called.
+func (f *FuncActor) RequiresStop() bool {
+	return f.startFunc == nil && f.stopFunc != nil
+}
+
 var _ Service = (*FuncService)(nil)
 
 // FuncService runs a function in a background goroutine and implements Service interface.
