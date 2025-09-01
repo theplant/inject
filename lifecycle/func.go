@@ -53,9 +53,7 @@ func (f *FuncActor) Stop(ctx context.Context) error {
 	return nil
 }
 
-// RequiresStop returns true if this actor needs Stop to be called even if Start not called.
-// This is true when startFunc is nil but stopFunc is not nil, indicating the actor
-// acquired resources during construction and needs cleanup regardless of Start not called.
+// acquired resources during construction and needs cleanup regardless of whether Start is called.
 func (f *FuncActor) RequiresStop() bool {
 	return f.startFunc == nil && f.stopFunc != nil
 }
