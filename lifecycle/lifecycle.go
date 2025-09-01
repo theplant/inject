@@ -59,8 +59,8 @@ type Named interface {
 	GetName() string
 }
 
-// RequiresStop defines an interface for actors that need cleanup even if their Start method not called.
-// This is useful for actors that acquire resources during construction and need cleanup regardless of Start not called.
+// RequiresStop defines an interface for actors that need cleanup even if their Start method is not called.
+// This is useful for actors that acquire resources during construction and need cleanup regardless of whether Start is called.
 type RequiresStop interface {
 	RequiresStop() bool
 }
