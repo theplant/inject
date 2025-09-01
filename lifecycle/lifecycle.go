@@ -59,6 +59,12 @@ type Named interface {
 	GetName() string
 }
 
+// RequiresStop defines an interface for actors that need cleanup even if their Start method not called.
+// This is useful for actors that acquire resources during construction and need cleanup regardless of Start not called.
+type RequiresStop interface {
+	RequiresStop() bool
+}
+
 // Lifecycle also implements Service interface.
 var _ Service = (*Lifecycle)(nil)
 
@@ -206,6 +212,49 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 		return errors.WithStack(ErrServed)
 	}
 
+	startedActors := make(map[int]bool)
+
+	defer func() {
+		lc.mu.RLock()
+		actors := slices.Clone(lc.actors)
+		stopTimeout := lc.stopTimeout
+		stopEachTimeout := lc.stopEachTimeout
+		logger := lc.logger
+		lc.mu.RUnlock()
+
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), stopTimeout)
+		stopCtx = withStopCause(stopCtx, xerr)
+		defer stopCancel()
+
+		for i := len(actors) - 1; i >= 0; i-- {
+			actor := actors[i]
+
+			needsStop := false
+			if rs, ok := actor.(RequiresStop); ok && rs.RequiresStop() {
+				needsStop = true
+			}
+			if startedActors[i] {
+				needsStop = true
+			}
+
+			if needsStop {
+				actorName := getActorName(actor, i)
+				actorType := "Actor"
+				if _, ok := actor.(Service); ok {
+					actorType = "Service"
+				}
+
+				stopEachCtx, stopEachCancel := context.WithTimeout(stopCtx, stopEachTimeout)
+				if err := actor.Stop(stopEachCtx); err != nil {
+					logger.ErrorContext(ctx, fmt.Sprintf("Failed to stop %s during cleanup", strings.ToLower(actorType)), "actor", actorName, "error", err)
+				} else {
+					logger.DebugContext(ctx, fmt.Sprintf("%s stopped successfully during cleanup", actorType), "actor", actorName)
+				}
+				stopEachCancel()
+			}
+		}
+	}()
+
 	// Automatically resolve all provided types with context
 	if err := lc.BuildContext(ctx, ctors...); err != nil {
 		return err
@@ -214,8 +263,6 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 	lc.mu.RLock()
 	actors := slices.Clone(lc.actors)
 	logger := lc.logger
-	stopTimeout := lc.stopTimeout
-	stopEachTimeout := lc.stopEachTimeout
 	lc.mu.RUnlock()
 
 	// Check for long-running services before starting actors
@@ -229,24 +276,11 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 		return ErrNoServices
 	}
 
-	actorNames := make([]string, len(actors))
-	for i, actor := range actors {
-		actorNames[i] = getActorName(actor, i)
-	}
-
 	logger.InfoContext(ctx, "Starting lifecycle", "actor_count", len(actors), "service_count", len(services))
 
-	var stopCtx context.Context
-	var stopCancel context.CancelFunc
-	defer func() {
-		if stopCancel != nil {
-			stopCancel()
-		}
-	}()
-
-	// Start all actors with individual defer cleanup
+	// Start all actors
 	for i, actor := range actors {
-		actorName := actorNames[i]
+		actorName := getActorName(actor, i)
 		actorType := "Actor"
 		if _, ok := actor.(Service); ok {
 			actorType = "Service"
@@ -256,22 +290,9 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 			logger.ErrorContext(ctx, fmt.Sprintf("Failed to start %s", strings.ToLower(actorType)), "actor", actorName, "error", err)
 			return err
 		}
-		logger.DebugContext(ctx, fmt.Sprintf("%s started successfully", actorType), "actor", actorName)
 
-		// Set up cleanup for this specific actor
-		defer func(actor Actor, actorName string) {
-			if stopCtx == nil {
-				stopCtx, stopCancel = context.WithTimeout(context.Background(), stopTimeout)
-				stopCtx = withStopCause(stopCtx, xerr)
-			}
-			stopEachCtx, stopEachCancel := context.WithTimeout(stopCtx, stopEachTimeout)
-			defer stopEachCancel()
-			if err := actor.Stop(stopEachCtx); err != nil {
-				logger.ErrorContext(ctx, fmt.Sprintf("Failed to stop %s during cleanup", strings.ToLower(actorType)), "actor", actorName, "error", err)
-			} else {
-				logger.DebugContext(ctx, fmt.Sprintf("%s stopped successfully", actorType), "actor", actorName)
-			}
-		}(actor, actorName)
+		startedActors[i] = true
+		logger.DebugContext(ctx, fmt.Sprintf("%s started successfully", actorType), "actor", actorName)
 	}
 
 	logger.InfoContext(ctx, "All actors started successfully", "actor_count", len(actors))
@@ -283,7 +304,7 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 		if !ok {
 			continue
 		}
-		actorName := actorNames[i]
+		actorName := getActorName(actor, i)
 		g.Go(func() error {
 			select {
 			case <-svc.Done():

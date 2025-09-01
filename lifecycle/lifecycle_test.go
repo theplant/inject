@@ -593,3 +593,155 @@ func TestWithStopPanicBehavior(t *testing.T) {
 		lc.WithStop(func(ctx context.Context) error { return nil })
 	}, "WithStop should panic when called on Lifecycle")
 }
+
+// TestRequiresStopCleanupScenarios tests various scenarios where RequiresStop actors need cleanup
+func TestRequiresStopCleanupScenarios(t *testing.T) {
+	t.Run("BuildContext failure should clean up RequiresStop actors", func(t *testing.T) {
+		var alwaysActiveStopped, normalStopped int32
+
+		// Create an actor that requires stop even without start
+		alwaysActiveActor := NewFuncActor(
+			nil, // start is nil - simulates actor that's active upon construction
+			func(_ context.Context) error {
+				atomic.AddInt32(&alwaysActiveStopped, 1)
+				return nil
+			},
+		).WithName("always-active")
+
+		// Create a normal actor
+		normalActor := NewFuncActor(
+			func(_ context.Context) error {
+				return nil
+			},
+			func(_ context.Context) error {
+				atomic.AddInt32(&normalStopped, 1)
+				return nil
+			},
+		).WithName("normal")
+
+		lc := New()
+		lc.Add(alwaysActiveActor)
+		lc.Add(normalActor)
+
+		// Simulate BuildContext failure by providing invalid constructor
+		err := lc.Serve(context.Background(),
+			func() (*MockActor, error) { return nil, errors.New("BuildContext failure") },
+		)
+
+		// Should fail with BuildContext error
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "BuildContext failure")
+
+		// Always active actor should be stopped even though BuildContext failed
+		require.Equal(t, int32(1), atomic.LoadInt32(&alwaysActiveStopped), "RequiresStop actor should be cleaned up")
+
+		// Normal actor should NOT be stopped because it doesn't RequiresStop and wasn't started
+		require.Equal(t, int32(0), atomic.LoadInt32(&normalStopped), "Normal actor should not be cleaned up if not RequiresStop and not started")
+	})
+
+	t.Run("Start failure should clean up started actors and RequiresStop actors", func(t *testing.T) {
+		var alwaysActiveStopped, firstActorStopped, secondActorStopped int32
+
+		// Actor that requires stop even without start success
+		alwaysActiveActor := NewFuncActor(
+			nil, // start is nil
+			func(_ context.Context) error {
+				atomic.AddInt32(&alwaysActiveStopped, 1)
+				return nil
+			},
+		).WithName("always-active")
+
+		// First normal actor that starts successfully
+		firstActor := NewFuncActor(
+			func(_ context.Context) error {
+				return nil // Successful start
+			},
+			func(_ context.Context) error {
+				atomic.AddInt32(&firstActorStopped, 1)
+				return nil
+			},
+		).WithName("first")
+
+		// Second actor that fails to start
+		secondActor := NewFuncActor(
+			func(_ context.Context) error {
+				return errors.New("start failure") // This will cause cleanup
+			},
+			func(_ context.Context) error {
+				atomic.AddInt32(&secondActorStopped, 1)
+				return nil
+			},
+		).WithName("second")
+
+		// Add a service to pass ErrNoServices check
+		dummyService := NewFuncService(func(_ context.Context) error {
+			return nil
+		}).WithName("dummy-service")
+
+		lc := New()
+		lc.Add(alwaysActiveActor)
+		lc.Add(firstActor)
+		lc.Add(secondActor)
+		lc.Add(dummyService)
+
+		err := lc.Serve(context.Background())
+
+		// Should fail with start error
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "start failure")
+
+		// Only RequiresStop and successfully started actors should be stopped
+		require.Equal(t, int32(1), atomic.LoadInt32(&alwaysActiveStopped), "RequiresStop actor should be cleaned up")
+		require.Equal(t, int32(1), atomic.LoadInt32(&firstActorStopped), "Successfully started actor should be cleaned up")
+		require.Equal(t, int32(0), atomic.LoadInt32(&secondActorStopped), "Failed actor should not be cleaned up (wasn't started and doesn't RequiresStop)")
+	})
+
+	t.Run("No duplicate Stop calls", func(t *testing.T) {
+		var stopCount int32
+
+		// Create an actor that RequiresStop so it will be cleaned up
+		actor := NewFuncActor(
+			nil, // start is nil - makes RequiresStop() return true
+			func(_ context.Context) error {
+				atomic.AddInt32(&stopCount, 1)
+				return nil
+			},
+		).WithName("requires-stop-actor")
+
+		// Add a service to pass ErrNoServices check
+		dummyService := NewFuncService(func(_ context.Context) error {
+			return nil
+		}).WithName("dummy-service")
+
+		lc := New()
+		lc.Add(actor)
+		lc.Add(dummyService)
+
+		err := lc.Serve(context.Background())
+		require.NoError(t, err) // Should succeed since dummy service completes
+
+		// Stop should only be called once during cleanup
+		require.Equal(t, int32(1), atomic.LoadInt32(&stopCount), "Stop should only be called once")
+	})
+
+	t.Run("RequiresStop interface works correctly", func(t *testing.T) {
+		// Test FuncActor with start=nil, stop≠nil
+		requiresStopActor := NewFuncActor(nil, func(_ context.Context) error { return nil })
+		require.True(t, requiresStopActor.RequiresStop(), "Actor with nil start and non-nil stop should require stop")
+
+		// Test FuncActor with start≠nil, stop≠nil
+		normalActor := NewFuncActor(
+			func(_ context.Context) error { return nil },
+			func(_ context.Context) error { return nil },
+		)
+		require.False(t, normalActor.RequiresStop(), "Normal actor should not require stop without starting")
+
+		// Test FuncActor with start=nil, stop=nil
+		nopActor := NewFuncActor(nil, nil)
+		require.False(t, nopActor.RequiresStop(), "Actor with both nil should not require stop")
+
+		// Test FuncActor with start≠nil, stop=nil
+		startOnlyActor := NewFuncActor(func(_ context.Context) error { return nil }, nil)
+		require.False(t, startOnlyActor.RequiresStop(), "Actor with only start should not require stop")
+	})
+}
