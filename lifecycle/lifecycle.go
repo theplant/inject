@@ -176,32 +176,6 @@ func (lc *Lifecycle) Add(actor Actor) {
 	lc.actors = append(lc.actors, actor)
 }
 
-// Add is a helper function to add an actor to the lifecycle and return it.
-func Add[A Actor](lc *Lifecycle, actor A) A {
-	lc.Add(actor)
-	return actor
-}
-
-// LazyAdd returns a function that when called will create an actor and add it to the lifecycle.
-// This enables lazy initialization where the actor is only created when actually needed.
-func LazyAdd[A Actor](f func() A) func(lc *Lifecycle) A {
-	return func(lc *Lifecycle) A {
-		return Add(lc, f())
-	}
-}
-
-// LazyAddE returns a function that when called will create an actor and add it to the lifecycle.
-// This enables lazy initialization with error handling where the actor is only created when needed.
-func LazyAddE[A Actor](f func() (A, error)) func(lc *Lifecycle) (A, error) {
-	return func(lc *Lifecycle) (A, error) {
-		actor, err := f()
-		if err == nil {
-			lc.Add(actor)
-		}
-		return actor, err
-	}
-}
-
 // Provide registers constructors and tracks all non-error return types for auto-resolution.
 // This overrides the embedded Injector's Provide method to enable auto-resolution of types.
 func (lc *Lifecycle) Provide(ctors ...any) error {
