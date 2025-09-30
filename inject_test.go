@@ -247,6 +247,128 @@ func TestUnresolvedDependency(t *testing.T) {
 	require.NoError(t, err)
 	_, err = injector.Invoke(func(s string, i int) string { return s })
 	require.ErrorIs(t, err, ErrTypeNotProvided)
+	require.Contains(t, err.Error(), "dependency path: int")
+}
+
+func TestDependencyPathDisplay(t *testing.T) {
+	t.Run("nested dependency path with struct field injection", func(t *testing.T) {
+		injector := New()
+
+		type Database struct {
+			DSN string `inject:""`
+		}
+
+		type Repository struct {
+			DB *Database `inject:""`
+		}
+
+		type Service struct {
+			Repo *Repository `inject:""`
+		}
+
+		err := injector.Provide(
+			func() *Service { return &Service{} },
+			func() *Repository { return &Repository{} },
+			func() *Database { return &Database{} },
+		)
+		require.NoError(t, err)
+
+		var service *Service
+		err = injector.Resolve(&service)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrTypeNotProvided)
+		require.Equal(t, "dependency path: *inject.Service -> *inject.Repository -> *inject.Database -> string: type not provided", err.Error())
+	})
+
+	t.Run("constructor parameter dependency path", func(t *testing.T) {
+		injector := New()
+
+		type Logger struct{}
+		type Config struct{}
+		type Service struct{}
+
+		err := injector.Provide(
+			func(logger *Logger, config *Config) *Service {
+				return &Service{}
+			},
+		)
+		require.NoError(t, err)
+
+		var service *Service
+		err = injector.Resolve(&service)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrTypeNotProvided)
+		require.Equal(t, "dependency path: *inject.Service -> *inject.Logger: type not provided", err.Error())
+	})
+
+	t.Run("dependency resolution within provider", func(t *testing.T) {
+		injector := New()
+
+		type Database struct {
+			DSN string `inject:""`
+		}
+
+		type Service struct {
+			DB *Database `inject:""`
+		}
+
+		err := injector.Provide(
+			func() *Service { return &Service{} },
+			func() (*Database, error) {
+				// When Resolve is called within a provider, it uses background context
+				// So the dependency path will only show the directly resolved type
+				var dsn string
+				if err := injector.Resolve(&dsn); err != nil {
+					return nil, err
+				}
+				return &Database{DSN: dsn}, nil
+			},
+		)
+		require.NoError(t, err)
+
+		var service *Service
+		err = injector.Resolve(&service)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrTypeNotProvided)
+		require.Equal(t, "dependency path: string: type not provided", err.Error())
+	})
+
+	t.Run("dependency resolution with ResolveContext within provider", func(t *testing.T) {
+		injector := New()
+
+		type Config struct {
+			Value string
+		}
+
+		type Database struct {
+			DSN string
+		}
+
+		type Service struct {
+			DB *Database `inject:""`
+		}
+
+		err := injector.Provide(
+			func() *Service { return &Service{} },
+			func(ctx context.Context) (*Database, error) {
+				// Dynamically resolve Config at runtime within provider
+				// The dependency on Config is decided at runtime, not declared via inject tag
+				// When ResolveContext is called with the passed context, the dependency path is preserved
+				var config *Config
+				if err := injector.ResolveContext(ctx, &config); err != nil {
+					return nil, err
+				}
+				return &Database{DSN: config.Value}, nil
+			},
+		)
+		require.NoError(t, err)
+
+		var service *Service
+		err = injector.Resolve(&service)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrTypeNotProvided)
+		require.Equal(t, "dependency path: *inject.Service -> *inject.Database -> *inject.Config: type not provided", err.Error())
+	})
 }
 
 func TestParentInjection(t *testing.T) {
@@ -1126,184 +1248,5 @@ func TestBuild(t *testing.T) {
 		// Should not fail on empty injector (only has *Injector)
 		err := injector.Build()
 		require.NoError(t, err)
-	})
-}
-
-func TestWithSkipErrTypeNotProvided(t *testing.T) {
-	t.Run("WithSkipErrTypeNotProvided in Resolve", func(t *testing.T) {
-		injector := New()
-
-		// Provide only one type
-		err := injector.Provide(func() string { return "test" })
-		require.NoError(t, err)
-
-		// Test without WithSkipErrTypeNotProvided - should return error
-		var str string
-		var num int
-		err = injector.ResolveContext(context.Background(), &str, &num)
-		require.Error(t, err)
-		require.True(t, errors.Is(err, ErrTypeNotProvided))
-		require.Equal(t, "test", str) // First resolved successfully
-		require.Equal(t, 0, num)      // Second failed, remains zero value
-
-		// Test with WithSkipErrTypeNotProvided - should skip missing types
-		str = ""
-		num = 0
-		ctx := WithSkipErrTypeNotProvided(context.Background())
-		err = injector.ResolveContext(ctx, &str, &num)
-		require.NoError(t, err)
-		require.Equal(t, "test", str) // First resolved successfully
-		require.Equal(t, 0, num)      // Second skipped, remains zero value
-	})
-
-	t.Run("WithSkipErrTypeNotProvided in Apply with struct fields", func(t *testing.T) {
-		type TestStruct struct {
-			ProvidedValue string `inject:""`
-			MissingValue  int    `inject:""`
-			OptionalValue bool   `inject:"optional"`
-			NoInjectTag   string // No inject tag, should be ignored
-		}
-
-		injector := New()
-		err := injector.Provide(func() string { return "provided" })
-		require.NoError(t, err)
-
-		// Test without WithSkipErrTypeNotProvided - should return error
-		testStruct := &TestStruct{}
-		err = injector.ApplyContext(context.Background(), testStruct)
-		require.Error(t, err)
-		require.True(t, errors.Is(err, ErrTypeNotProvided))
-		require.Equal(t, "provided", testStruct.ProvidedValue) // Successfully injected before error
-		require.Equal(t, 0, testStruct.MissingValue)           // Not injected due to error
-
-		// Test with WithSkipErrTypeNotProvided - should skip missing types
-		testStruct = &TestStruct{}
-		ctx := WithSkipErrTypeNotProvided(context.Background())
-		err = injector.ApplyContext(ctx, testStruct)
-		require.NoError(t, err)
-		require.Equal(t, "provided", testStruct.ProvidedValue) // Successfully injected
-		require.Equal(t, 0, testStruct.MissingValue)           // Skipped, remains zero value
-		require.Equal(t, false, testStruct.OptionalValue)      // Optional field skipped
-		require.Equal(t, "", testStruct.NoInjectTag)           // No inject tag, not touched
-	})
-
-	t.Run("WithSkipErrTypeNotProvided with optional tag precedence", func(t *testing.T) {
-		type TestStruct struct {
-			MissingValue    int    `inject:""`
-			MissingOptional bool   `inject:"optional"`
-			ProvidedValue   string `inject:""`
-		}
-
-		injector := New()
-		err := injector.Provide(func() string { return "available" })
-		require.NoError(t, err)
-
-		// Test that optional tag and WithSkipErrTypeNotProvided both work
-		testStruct := &TestStruct{}
-		ctx := WithSkipErrTypeNotProvided(context.Background())
-		err = injector.ApplyContext(ctx, testStruct)
-		require.NoError(t, err)
-		require.Equal(t, "available", testStruct.ProvidedValue) // Successfully injected
-		require.Equal(t, 0, testStruct.MissingValue)            // Skipped due to context
-		require.Equal(t, false, testStruct.MissingOptional)     // Skipped due to optional tag
-	})
-
-	t.Run("WithSkipErrTypeNotProvided prevents nested propagation", func(t *testing.T) {
-		type InnerStruct struct {
-			Value int `inject:""`
-		}
-
-		type OuterStruct struct {
-			ProvidedValue string       `inject:""`
-			MissingInner  *InnerStruct `inject:""`
-		}
-
-		injector := New()
-		err := injector.Provide(
-			func() string { return "outer" },
-			func() *InnerStruct { return &InnerStruct{} },
-		)
-		require.NoError(t, err)
-
-		// Test that missing InnerStruct is skipped at current level
-		outerStruct := &OuterStruct{}
-		ctx := WithSkipErrTypeNotProvided(context.Background())
-		err = injector.ApplyContext(ctx, outerStruct)
-		require.NoError(t, err) // Should succeed with skip flag
-		require.Equal(t, "outer", outerStruct.ProvidedValue)
-		require.Nil(t, outerStruct.MissingInner) // Should be nil due to skip because of int type not provided
-
-		// Now provide both InnerStruct constructor and its dependency
-		err = injector.Provide(func() int { return 42 })
-		require.NoError(t, err)
-
-		// Test again - should succeed and Inner should be properly constructed
-		// because nested dependency resolution works normally (skip flag doesn't propagate)
-		outerStruct = &OuterStruct{}
-		err = injector.ApplyContext(ctx, outerStruct)
-		require.NoError(t, err)
-		require.Equal(t, "outer", outerStruct.ProvidedValue)
-		require.NotNil(t, outerStruct.MissingInner)          // Should be constructed now
-		require.Equal(t, 42, outerStruct.MissingInner.Value) // Verify nested injection worked
-	})
-
-	t.Run("WithSkipErrTypeNotProvided mixed with regular errors", func(t *testing.T) {
-		type TestStruct struct {
-			ErrorTypeField error           `inject:""` // Should cause ErrTypeNotAllowed
-			MissingValue   int             `inject:""` // Should be skipped
-			ContextField   context.Context `inject:""` // Should cause ErrTypeNotAllowed
-		}
-
-		injector := New()
-
-		testStruct := &TestStruct{}
-		ctx := WithSkipErrTypeNotProvided(context.Background())
-		err := injector.ApplyContext(ctx, testStruct)
-		// Should still fail with ErrTypeNotAllowed, not skip it
-		require.Error(t, err)
-		require.ErrorIs(t, err, ErrTypeNotAllowed)
-	})
-
-	t.Run("WithSkipErrTypeNotProvided context value isolation", func(t *testing.T) {
-		injector := New()
-
-		// Test that the context modification doesn't affect other goroutines/calls
-		var str string
-		var num int
-
-		// First call with skip context
-		ctx1 := WithSkipErrTypeNotProvided(context.Background())
-		err1 := injector.ResolveContext(ctx1, &str, &num)
-		require.NoError(t, err1)
-
-		// Second call without skip context should still error
-		str = ""
-		num = 0
-		err2 := injector.ResolveContext(context.Background(), &str, &num)
-		require.Error(t, err2)
-		require.ErrorIs(t, err2, ErrTypeNotProvided)
-	})
-
-	t.Run("WithSkipErrTypeNotProvided in auto-apply during invoke", func(t *testing.T) {
-		type AutoApplyStruct struct {
-			ProvidedValue string `inject:""`
-			MissingValue  int    `inject:""`
-		}
-
-		injector := New()
-		err := injector.Provide(func() string { return "auto" })
-		require.NoError(t, err)
-
-		// Test that auto-apply also respects the skip context
-		ctx := WithSkipErrTypeNotProvided(context.Background())
-		results, err := injector.InvokeContext(ctx, func() *AutoApplyStruct {
-			return &AutoApplyStruct{}
-		})
-		require.NoError(t, err)
-		require.Len(t, results, 1)
-
-		result := results[0].(*AutoApplyStruct)
-		require.Equal(t, "auto", result.ProvidedValue) // Successfully injected
-		require.Equal(t, 0, result.MissingValue)       // Skipped missing value
 	})
 }

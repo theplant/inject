@@ -108,10 +108,32 @@ func (lc *Lifecycle) IsStarted() bool {
 	return lc.FuncService.IsStarted() || lc.served.Load()
 }
 
+func collectServices(actors []Actor) []Service {
+	var services []Service
+	for _, actor := range actors {
+		if svc, ok := actor.(Service); ok {
+			services = append(services, svc)
+		}
+	}
+	return services
+}
+
+// Start builds the context and starts the lifecycle.
 func (lc *Lifecycle) Start(ctx context.Context) error {
 	if err := lc.BuildContext(ctx); err != nil {
 		return err
 	}
+
+	lc.mu.RLock()
+	actors := slices.Clone(lc.actors)
+	lc.mu.RUnlock()
+
+	// Check for long-running services before starting actors
+	services := collectServices(actors)
+	if len(services) == 0 {
+		return errors.WithStack(ErrNoServices)
+	}
+
 	return lc.FuncService.Start(ctx)
 }
 
@@ -152,32 +174,6 @@ func (lc *Lifecycle) Add(actor Actor) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
 	lc.actors = append(lc.actors, actor)
-}
-
-// Add is a helper function to add an actor to the lifecycle and return it.
-func Add[A Actor](lc *Lifecycle, actor A) A {
-	lc.Add(actor)
-	return actor
-}
-
-// LazyAdd returns a function that when called will create an actor and add it to the lifecycle.
-// This enables lazy initialization where the actor is only created when actually needed.
-func LazyAdd[A Actor](f func() A) func(lc *Lifecycle) A {
-	return func(lc *Lifecycle) A {
-		return Add(lc, f())
-	}
-}
-
-// LazyAddE returns a function that when called will create an actor and add it to the lifecycle.
-// This enables lazy initialization with error handling where the actor is only created when needed.
-func LazyAddE[A Actor](f func() (A, error)) func(lc *Lifecycle) (A, error) {
-	return func(lc *Lifecycle) (A, error) {
-		actor, err := f()
-		if err == nil {
-			lc.Add(actor)
-		}
-		return actor, err
-	}
 }
 
 // Provide registers constructors and tracks all non-error return types for auto-resolution.
@@ -266,14 +262,9 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 	lc.mu.RUnlock()
 
 	// Check for long-running services before starting actors
-	var services []Service
-	for _, actor := range actors {
-		if svc, ok := actor.(Service); ok {
-			services = append(services, svc)
-		}
-	}
+	services := collectServices(actors)
 	if len(services) == 0 {
-		return ErrNoServices
+		return errors.WithStack(ErrNoServices)
 	}
 
 	logger.InfoContext(ctx, "Starting lifecycle", "actor_count", len(actors), "service_count", len(services))
@@ -318,7 +309,7 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 				return errors.WithStack(errServiceCompleted)
 			case <-gCtx.Done():
 				err := errors.WithStack(gCtx.Err())
-				logger.DebugContext(gCtx, "Service monitoring cancelled", "actor", actorName, "error", err)
+				logger.DebugContext(gCtx, "Service monitoring cancelled", "actor", actorName, "cause", err)
 				return err
 			}
 		})

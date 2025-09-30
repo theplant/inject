@@ -159,7 +159,8 @@ func TestLifecycle(t *testing.T) {
 				d.stopCause = GetStopCause(ctx)
 				return nil
 			}).WithName("dummy-actor")
-			return Add(lc, d)
+			lc.Add(d)
+			return d
 		},
 		// Dummy service
 		func(lc *Lifecycle) *DummyService {
@@ -172,7 +173,8 @@ func TestLifecycle(t *testing.T) {
 				d.stopCause = GetStopCause(ctx)
 				return nil
 			}).WithName("dummy-service")
-			return Add(lc, d)
+			lc.Add(d)
+			return d
 		},
 	))
 
@@ -252,62 +254,91 @@ func TestIsStarted(t *testing.T) {
 	require.True(t, lc.IsStarted())
 }
 
-// TestLazyMethods demonstrates correct usage of LazyAdd and LazyAddE for deferred initialization
-func TestLazyMethods(t *testing.T) {
-	t.Run("LazyAdd defers expensive actor creation", func(t *testing.T) {
-		lc, err := Start(
-			context.Background(),
-			LazyAdd(func() *MockActor {
-				return &MockActor{name: "expensive-resource"}
-			}),
+func TestStart(t *testing.T) {
+	t.Run("Start succeeds with service", func(t *testing.T) {
+		lc := New()
+
+		require.NoError(t, lc.Provide(
+			SetupSignal,
+		))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		err := lc.Start(ctx)
+		require.NoError(t, err)
+		require.True(t, lc.IsStarted())
+
+		cancel()
+		require.NoError(t, lc.Stop(context.Background()))
+	})
+
+	t.Run("Start fails without service", func(t *testing.T) {
+		lc := New()
+
+		require.NoError(t, lc.Provide(
+			func(lc *Lifecycle) *MockActor {
+				actor := &MockActor{name: "test-actor"}
+				lc.Add(actor)
+				return actor
+			},
+		))
+
+		err := lc.Start(context.Background())
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrNoServices)
+	})
+
+	t.Run("Start fails with BuildContext error", func(t *testing.T) {
+		lc := New()
+
+		err := lc.Provide(
+			func() (*MockActor, error) {
+				return nil, errors.New("build context error")
+			},
 		)
 		require.NoError(t, err)
-		defer func() {
-			require.NoError(t, lc.Stop(context.Background()))
-		}()
 
-		actor := inject.MustResolve[*MockActor](lc)
-		require.Equal(t, "expensive-resource", actor.name)
+		err = lc.Start(context.Background())
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "build context error")
 	})
 
-	t.Run("LazyAddE handles initialization failures gracefully", func(t *testing.T) {
-		// Define a separate type to avoid DI container conflicts
-		type FailingService struct {
-			*MockActor
-		}
-
-		// Ensure FailingService implements Actor
-		var _ Actor = (*FailingService)(nil)
-
+	t.Run("Start convenience function succeeds", func(t *testing.T) {
 		lc, err := Start(
 			context.Background(),
-			LazyAddE(func() (*MockActor, error) {
-				return &MockActor{name: "expensive-resource"}, nil
-			}),
-			LazyAddE(func() (*FailingService, error) {
-				return nil, errors.New("service unavailable")
-			}),
+			SetupSignal,
 		)
-		require.ErrorContains(t, err, "service unavailable")
-		require.Nil(t, lc)
-	})
-}
+		require.NoError(t, err)
+		require.NotNil(t, lc)
+		require.True(t, lc.IsStarted())
 
-// TestAdd demonstrates error-safe actor addition patterns
-func TestAdd(t *testing.T) {
-	lc, err := Start(
-		context.Background(),
-		func(lc *Lifecycle) *MockActor {
-			return Add(lc, &MockActor{name: "expensive-resource"})
-		},
-	)
-	require.NoError(t, err)
-	defer func() {
 		require.NoError(t, lc.Stop(context.Background()))
-	}()
+	})
 
-	actor := inject.MustResolve[*MockActor](lc)
-	require.Equal(t, "expensive-resource", actor.name)
+	t.Run("Start convenience function fails with provide error", func(t *testing.T) {
+		lc, err := Start(
+			context.Background(),
+			"not a function",
+		)
+		require.Error(t, err)
+		require.Nil(t, lc)
+		require.ErrorIs(t, err, inject.ErrInvalidProvider)
+	})
+
+	t.Run("Start convenience function fails without service", func(t *testing.T) {
+		lc, err := Start(
+			context.Background(),
+			func(lc *Lifecycle) *MockActor {
+				actor := &MockActor{name: "test-actor"}
+				lc.Add(actor)
+				return actor
+			},
+		)
+		require.Error(t, err)
+		require.Nil(t, lc)
+		require.ErrorIs(t, err, ErrNoServices)
+	})
 }
 
 // TestServiceCompletion tests service completion scenarios (lines 289-298 in lifecycle.go)

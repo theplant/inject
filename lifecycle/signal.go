@@ -58,7 +58,9 @@ func (s *SignalService) WithName(name string) *SignalService {
 // SetupSignal creates and registers a signal handling service that listens for SIGINT and SIGTERM.
 // Returns a SignalService that will complete when a signal is received.
 func SetupSignal(lc *Lifecycle) *SignalService {
-	return Add(lc, NewSignalService())
+	svc := NewSignalService()
+	lc.Add(svc)
+	return svc
 }
 
 // SetupSignalWith returns a setup function that creates and registers a signal handling service
@@ -66,6 +68,8 @@ func SetupSignal(lc *Lifecycle) *SignalService {
 // The returned function can be used with dependency injection or called directly with a Lifecycle instance.
 func SetupSignalWith(signals ...os.Signal) func(lc *Lifecycle) *SignalService {
 	return func(lc *Lifecycle) *SignalService {
-		return Add(lc, NewSignalService(signals...))
+		svc := NewSignalService(signals...)
+		lc.Add(svc)
+		return svc
 	}
 }
