@@ -257,6 +257,7 @@ func TestLazyMethods(t *testing.T) {
 	t.Run("LazyAdd defers expensive actor creation", func(t *testing.T) {
 		lc, err := Start(
 			context.Background(),
+			SetupSignal,
 			LazyAdd(func() *MockActor {
 				return &MockActor{name: "expensive-resource"}
 			}),
@@ -297,6 +298,7 @@ func TestLazyMethods(t *testing.T) {
 func TestAdd(t *testing.T) {
 	lc, err := Start(
 		context.Background(),
+		SetupSignal,
 		func(lc *Lifecycle) *MockActor {
 			return Add(lc, &MockActor{name: "expensive-resource"})
 		},

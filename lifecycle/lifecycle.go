@@ -108,10 +108,32 @@ func (lc *Lifecycle) IsStarted() bool {
 	return lc.FuncService.IsStarted() || lc.served.Load()
 }
 
+func collectServices(actors []Actor) []Service {
+	var services []Service
+	for _, actor := range actors {
+		if svc, ok := actor.(Service); ok {
+			services = append(services, svc)
+		}
+	}
+	return services
+}
+
+// Start builds the context and starts the lifecycle.
 func (lc *Lifecycle) Start(ctx context.Context) error {
 	if err := lc.BuildContext(ctx); err != nil {
 		return err
 	}
+
+	lc.mu.RLock()
+	actors := slices.Clone(lc.actors)
+	lc.mu.RUnlock()
+
+	// Check for long-running services before starting actors
+	services := collectServices(actors)
+	if len(services) == 0 {
+		return errors.WithStack(ErrNoServices)
+	}
+
 	return lc.FuncService.Start(ctx)
 }
 
@@ -266,14 +288,9 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 	lc.mu.RUnlock()
 
 	// Check for long-running services before starting actors
-	var services []Service
-	for _, actor := range actors {
-		if svc, ok := actor.(Service); ok {
-			services = append(services, svc)
-		}
-	}
+	services := collectServices(actors)
 	if len(services) == 0 {
-		return ErrNoServices
+		return errors.WithStack(ErrNoServices)
 	}
 
 	logger.InfoContext(ctx, "Starting lifecycle", "actor_count", len(actors), "service_count", len(services))
@@ -318,7 +335,7 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 				return errors.WithStack(errServiceCompleted)
 			case <-gCtx.Done():
 				err := errors.WithStack(gCtx.Err())
-				logger.DebugContext(gCtx, "Service monitoring cancelled", "actor", actorName, "error", err)
+				logger.DebugContext(gCtx, "Service monitoring cancelled", "actor", actorName, "cause", err)
 				return err
 			}
 		})
