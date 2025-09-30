@@ -239,11 +239,6 @@ var (
 )
 
 func (inj *Injector) applyStruct(ctx context.Context, rv reflect.Value) error {
-	skipErrTypeNotProvided, _ := ctx.Value(ctxKeySkipErrTypeNotProvided{}).(bool)
-	if skipErrTypeNotProvided {
-		ctx = context.WithValue(ctx, ctxKeySkipErrTypeNotProvided{}, false)
-	}
-
 	rt := rv.Type()
 
 	for i := 0; i < rv.NumField(); i++ {
@@ -256,7 +251,7 @@ func (inj *Injector) applyStruct(ctx context.Context, rv reflect.Value) error {
 			dep, err := inj.resolve(ctx, structField.Type)
 			if err != nil {
 				if errors.Is(err, ErrTypeNotProvided) {
-					if strings.TrimSpace(tag) == TagValueOptional || skipErrTypeNotProvided {
+					if strings.TrimSpace(tag) == TagValueOptional {
 						continue
 					}
 				}
@@ -346,37 +341,7 @@ func (inj *Injector) Resolve(refs ...any) error {
 	return inj.ResolveContext(context.Background(), refs...)
 }
 
-type ctxKeySkipErrTypeNotProvided struct{}
-
-// WithSkipErrTypeNotProvided returns a context that enables skipping ErrTypeNotProvided errors
-// during dependency injection operations (Resolve, Apply).
-//
-// IMPORTANT: This flag only affects the current layer of dependency resolution.
-// It does NOT propagate to nested dependency resolution to prevent interference
-// with the dependency chain. This ensures that:
-// 1. Nested constructors work with their normal dependency requirements
-// 2. Future Provide operations can correctly rebuild dependency chains
-// 3. The skip behavior is predictable and doesn't cause unexpected side effects
-//
-// Example:
-//
-//	type Service struct {
-//	    Config *Config `inject:""`      // May be skipped if not provided
-//	    Logger *Logger `inject:""`      // May be skipped if not provided
-//	}
-//
-//	ctx := WithSkipErrTypeNotProvided(context.Background())
-//	err := injector.ApplyContext(ctx, &service) // Won't fail if Config or Logger missing
-func WithSkipErrTypeNotProvided(ctx context.Context) context.Context {
-	return context.WithValue(ctx, ctxKeySkipErrTypeNotProvided{}, true)
-}
-
 func (inj *Injector) ResolveContext(ctx context.Context, refs ...any) error {
-	skipErrTypeNotProvided, _ := ctx.Value(ctxKeySkipErrTypeNotProvided{}).(bool)
-	if skipErrTypeNotProvided {
-		ctx = context.WithValue(ctx, ctxKeySkipErrTypeNotProvided{}, false)
-	}
-
 	for _, ref := range refs {
 		refType := reflect.TypeOf(ref)
 		if refType == nil || refType.Kind() != reflect.Ptr {
@@ -385,9 +350,6 @@ func (inj *Injector) ResolveContext(ctx context.Context, refs ...any) error {
 
 		rv, err := inj.resolve(ctx, refType.Elem())
 		if err != nil {
-			if skipErrTypeNotProvided && errors.Is(err, ErrTypeNotProvided) {
-				continue
-			}
 			return err
 		}
 		reflect.ValueOf(ref).Elem().Set(rv)
