@@ -27,6 +27,33 @@ var (
 	ErrInvalidApplyTarget  = errors.New("apply only accepts a struct")
 )
 
+type ctxKeyDependencyPath struct{}
+
+type dependencyPath []reflect.Type
+
+func (dp dependencyPath) String() string {
+	if len(dp) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, t := range dp {
+		parts = append(parts, t.String())
+	}
+	return strings.Join(parts, " -> ")
+}
+
+func getDependencyPath(ctx context.Context) dependencyPath {
+	path, _ := ctx.Value(ctxKeyDependencyPath{}).(dependencyPath)
+	return path
+}
+
+func appendDependencyToPath(ctx context.Context, typ reflect.Type) context.Context {
+	path := getDependencyPath(ctx)
+	newPath := append(dependencyPath{}, path...)
+	newPath = append(newPath, typ)
+	return context.WithValue(ctx, ctxKeyDependencyPath{}, newPath)
+}
+
 var (
 	typeError   = reflect.TypeOf((*error)(nil)).Elem()
 	typeContext = reflect.TypeOf((*context.Context)(nil)).Elem()
@@ -165,6 +192,8 @@ func (inj *Injector) invoke(ctx context.Context, f any) ([]reflect.Value, error)
 }
 
 func (inj *Injector) resolve(ctx context.Context, rt reflect.Type) (reflect.Value, error) {
+	ctx = appendDependencyToPath(ctx, rt)
+
 	inj.mu.RLock()
 	rv := inj.values[rt]
 	if rv.IsValid() {
@@ -211,7 +240,7 @@ func (inj *Injector) resolve(ctx context.Context, rt reflect.Type) (reflect.Valu
 		return parent.resolve(ctx, rt)
 	}
 
-	return rv, errors.Wrap(ErrTypeNotProvided, rt.String())
+	return rv, errors.Wrapf(ErrTypeNotProvided, "dependency path: %s", getDependencyPath(ctx).String())
 }
 
 func unwrapPtr(rv reflect.Value) reflect.Value {

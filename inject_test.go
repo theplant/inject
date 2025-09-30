@@ -247,6 +247,128 @@ func TestUnresolvedDependency(t *testing.T) {
 	require.NoError(t, err)
 	_, err = injector.Invoke(func(s string, i int) string { return s })
 	require.ErrorIs(t, err, ErrTypeNotProvided)
+	require.Contains(t, err.Error(), "dependency path: int")
+}
+
+func TestDependencyPathDisplay(t *testing.T) {
+	t.Run("nested dependency path with struct field injection", func(t *testing.T) {
+		injector := New()
+
+		type Database struct {
+			DSN string `inject:""`
+		}
+
+		type Repository struct {
+			DB *Database `inject:""`
+		}
+
+		type Service struct {
+			Repo *Repository `inject:""`
+		}
+
+		err := injector.Provide(
+			func() *Service { return &Service{} },
+			func() *Repository { return &Repository{} },
+			func() *Database { return &Database{} },
+		)
+		require.NoError(t, err)
+
+		var service *Service
+		err = injector.Resolve(&service)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrTypeNotProvided)
+		require.Equal(t, "dependency path: *inject.Service -> *inject.Repository -> *inject.Database -> string: type not provided", err.Error())
+	})
+
+	t.Run("constructor parameter dependency path", func(t *testing.T) {
+		injector := New()
+
+		type Logger struct{}
+		type Config struct{}
+		type Service struct{}
+
+		err := injector.Provide(
+			func(logger *Logger, config *Config) *Service {
+				return &Service{}
+			},
+		)
+		require.NoError(t, err)
+
+		var service *Service
+		err = injector.Resolve(&service)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrTypeNotProvided)
+		require.Equal(t, "dependency path: *inject.Service -> *inject.Logger: type not provided", err.Error())
+	})
+
+	t.Run("dependency resolution within provider", func(t *testing.T) {
+		injector := New()
+
+		type Database struct {
+			DSN string `inject:""`
+		}
+
+		type Service struct {
+			DB *Database `inject:""`
+		}
+
+		err := injector.Provide(
+			func() *Service { return &Service{} },
+			func() (*Database, error) {
+				// When Resolve is called within a provider, it uses background context
+				// So the dependency path will only show the directly resolved type
+				var dsn string
+				if err := injector.Resolve(&dsn); err != nil {
+					return nil, err
+				}
+				return &Database{DSN: dsn}, nil
+			},
+		)
+		require.NoError(t, err)
+
+		var service *Service
+		err = injector.Resolve(&service)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrTypeNotProvided)
+		require.Equal(t, "dependency path: string: type not provided", err.Error())
+	})
+
+	t.Run("dependency resolution with ResolveContext within provider", func(t *testing.T) {
+		injector := New()
+
+		type Config struct {
+			Value string
+		}
+
+		type Database struct {
+			DSN string
+		}
+
+		type Service struct {
+			DB *Database `inject:""`
+		}
+
+		err := injector.Provide(
+			func() *Service { return &Service{} },
+			func(ctx context.Context) (*Database, error) {
+				// Dynamically resolve Config at runtime within provider
+				// The dependency on Config is decided at runtime, not declared via inject tag
+				// When ResolveContext is called with the passed context, the dependency path is preserved
+				var config *Config
+				if err := injector.ResolveContext(ctx, &config); err != nil {
+					return nil, err
+				}
+				return &Database{DSN: config.Value}, nil
+			},
+		)
+		require.NoError(t, err)
+
+		var service *Service
+		err = injector.Resolve(&service)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrTypeNotProvided)
+		require.Equal(t, "dependency path: *inject.Service -> *inject.Database -> *inject.Config: type not provided", err.Error())
+	})
 }
 
 func TestParentInjection(t *testing.T) {
