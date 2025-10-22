@@ -188,7 +188,7 @@ err := lc.Provide(
             DatabaseURL: "postgres://localhost:5432/myapp",
         }
     },
-    func(conf *Config, lc *lifecycle.Lifecycle) *Database {
+    func(lc *lifecycle.Lifecycle, conf *Config) *Database {
         db := &Database{}
         lc.Add(lifecycle.NewFuncActor(
             func(_ context.Context) error {
