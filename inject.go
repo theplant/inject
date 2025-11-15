@@ -192,6 +192,7 @@ func (inj *Injector) invoke(ctx context.Context, f any) ([]reflect.Value, error)
 }
 
 func (inj *Injector) resolve(ctx context.Context, rt reflect.Type) (reflect.Value, error) {
+	originalCtx := ctx
 	ctx = appendDependencyToPath(ctx, rt)
 
 	inj.mu.RLock()
@@ -236,11 +237,11 @@ func (inj *Injector) resolve(ctx context.Context, rt reflect.Type) (reflect.Valu
 		return inj.resolve(ctx, rt)
 	}
 
-	if parent != nil {
-		return parent.resolve(ctx, rt)
+	if parent == nil {
+		return rv, errors.Wrapf(ErrTypeNotProvided, "dependency path: %s", getDependencyPath(ctx).String())
 	}
 
-	return rv, errors.Wrapf(ErrTypeNotProvided, "dependency path: %s", getDependencyPath(ctx).String())
+	return parent.resolve(originalCtx, rt)
 }
 
 func unwrapPtr(rv reflect.Value) reflect.Value {

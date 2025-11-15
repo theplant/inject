@@ -369,6 +369,27 @@ func TestDependencyPathDisplay(t *testing.T) {
 		require.ErrorIs(t, err, ErrTypeNotProvided)
 		require.Equal(t, "dependency path: *inject.Service -> *inject.Database -> *inject.Config: type not provided", err.Error())
 	})
+
+	t.Run("multi-level injector chain avoids duplicate types in path", func(t *testing.T) {
+		parent := New()
+		parent.SetParent(New())
+
+		child := New()
+		child.SetParent(parent)
+
+		type Service struct {
+			Name string `inject:""`
+		}
+
+		err := child.Provide(func() *Service { return &Service{} })
+		require.NoError(t, err)
+
+		var service *Service
+		err = child.Resolve(&service)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrTypeNotProvided)
+		require.Equal(t, "dependency path: *inject.Service -> string: type not provided", err.Error())
+	})
 }
 
 func TestParentInjection(t *testing.T) {
