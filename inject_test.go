@@ -372,16 +372,18 @@ func TestDependencyPathDisplay(t *testing.T) {
 
 	t.Run("multi-level injector chain avoids duplicate types in path", func(t *testing.T) {
 		parent := New()
-		parent.SetParent(New())
+		err := parent.SetParent(New())
+		require.NoError(t, err)
 
 		child := New()
-		child.SetParent(parent)
+		err = child.SetParent(parent)
+		require.NoError(t, err)
 
 		type Service struct {
 			Name string `inject:""`
 		}
 
-		err := child.Provide(func() *Service { return &Service{} })
+		err = child.Provide(func() *Service { return &Service{} })
 		require.NoError(t, err)
 
 		var service *Service
