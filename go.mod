@@ -1,6 +1,6 @@
 module github.com/theplant/inject
 
-go 1.22.3
+go 1.24.0
 
 require (
 	github.com/pkg/errors v0.9.1
