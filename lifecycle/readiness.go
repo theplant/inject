@@ -10,7 +10,7 @@ type ReadinessProbe struct {
 
 // NewReadinessProbe creates a new readiness probe.
 func NewReadinessProbe() *ReadinessProbe {
-	return &ReadinessProbe{readyC: make(chan struct{}, 1)}
+	return &ReadinessProbe{readyC: make(chan struct{})}
 }
 
 // SignalReady signals that the application is ready to serve traffic.

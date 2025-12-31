@@ -34,6 +34,7 @@ The `lifecycle` subpackage provides a complete lifecycle management system that 
 - **Graceful Shutdown**: Actors stop in reverse order with timeout control
 - **Service Monitoring**: Automatic monitoring of long-running services
 - **Signal Handling**: Built-in OS signal handling for graceful shutdown
+- **Readiness Probes**: Optional blocking until services are ready to serve traffic
 - **Error Handling**: Comprehensive error handling and logging
 
 ### Basic Example
@@ -231,6 +232,51 @@ var setupHTTPServer = []any{
 lc.Provide(setupHTTPServer)
 ```
 
+#### Signal Handling
+
+```go
+import "syscall"
+
+// Custom signals
+lc.Provide(lifecycle.SetupSignalWith(syscall.SIGUSR1, syscall.SIGUSR2))
+
+// Default signals (SIGINT, SIGTERM)
+lc.Provide(lifecycle.SetupSignal)
+```
+
+#### Readiness Probe
+
+The lifecycle supports optional readiness probes to block startup until services are ready:
+
+```go
+func SetupReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) *lifecycle.ReadinessProbe {
+    probe := lifecycle.NewReadinessProbe()
+
+    // Add a readiness check actor that signals when HTTP server is ready
+    lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
+        err := WaitForReady(ctx, fmt.Sprintf("http://%s/health", listener.Addr().String()))
+        if err != nil {
+            return err
+        }
+        probe.SignalReady()
+        return nil
+    }, nil).WithName("readiness-probe"))
+
+    return probe
+}
+```
+
+When using `lifecycle.Start()`, the lifecycle will block until `SignalReady()` is called on the probe:
+
+```go
+// Start blocks until readiness probe signals ready
+lc, err := lifecycle.Start(context.Background(),
+    SetupHTTPListener,
+    SetupHTTPServer,
+    SetupReadinessProbe,  // Optional - if not provided, Start returns immediately
+)
+```
+
 ### Configuration
 
 #### Timeouts
@@ -253,18 +299,6 @@ import (
 
 logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 lc := lifecycle.New().WithLogger(logger)
-```
-
-#### Signal Handling
-
-```go
-import "syscall"
-
-// Custom signals
-lc.Provide(lifecycle.SetupSignalWith(syscall.SIGUSR1, syscall.SIGUSR2))
-
-// Default signals (SIGINT, SIGTERM)
-lc.Provide(lifecycle.SetupSignal)
 ```
 
 ### Error Handling and Monitoring
