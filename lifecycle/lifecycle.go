@@ -134,7 +134,24 @@ func (lc *Lifecycle) Start(ctx context.Context) error {
 		return errors.WithStack(ErrNoServices)
 	}
 
-	return lc.FuncService.Start(ctx)
+	err := lc.FuncService.Start(ctx)
+	if err != nil {
+		return err
+	}
+
+	var readnessProbe *ReadinessProbe
+	if err := lc.ResolveContext(ctx, &readnessProbe); err != nil && !errors.Is(err, inject.ErrTypeNotProvided) {
+		return err
+	}
+	if readnessProbe != nil {
+		select {
+		case <-ctx.Done():
+			return errors.WithStack(ctx.Err())
+		case <-readnessProbe.readyC:
+		}
+	}
+
+	return nil
 }
 
 // WithName sets the name for the lifecycle.
