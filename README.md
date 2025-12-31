@@ -258,7 +258,8 @@ func SetupReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) *lifecy
         if err != nil {
             return err
         }
-        probe.SignalReady()
+        // Signal success (nil error means ready)
+        probe.Signal(nil)
         return nil
     }, nil).WithName("readiness-probe"))
 
@@ -266,7 +267,7 @@ func SetupReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) *lifecy
 }
 ```
 
-When using `lifecycle.Start()`, the lifecycle will block until `SignalReady()` is called on the probe:
+When using `lifecycle.Start()`, the lifecycle will block until `Signal()` is called on the probe:
 
 ```go
 // Start blocks until readiness probe signals ready
@@ -276,6 +277,11 @@ lc, err := lifecycle.Start(context.Background(),
     SetupReadinessProbe,  // Optional - if not provided, Start returns immediately
 )
 ```
+
+The `Signal(err error)` method supports both success and failure cases:
+
+- `Signal(nil)` - Signals that the service is ready
+- `Signal(err)` - Signals that the service failed to become ready (the error will be returned by `Start()`)
 
 ### Configuration
 

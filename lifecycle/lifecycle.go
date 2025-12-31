@@ -147,7 +147,10 @@ func (lc *Lifecycle) Start(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return errors.WithStack(ctx.Err())
-		case <-readnessProbe.readyC:
+		case <-readnessProbe.doneC:
+			if readnessProbe.err != nil {
+				return errors.WithStack(readnessProbe.err)
+			}
 		}
 	}
 
