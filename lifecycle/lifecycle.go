@@ -112,7 +112,7 @@ func (lc *Lifecycle) RequiresReadinessProbe() *ReadinessProbe {
 
 // WithStop is not supported for Lifecycle.
 func (lc *Lifecycle) WithStop(stop func(ctx context.Context) error) *Lifecycle {
-	panic("this method is not supported for Lifecycle")
+	panic("WithStop is not supported for Lifecycle")
 }
 
 // IsStarted returns true if the lifecycle has been started.

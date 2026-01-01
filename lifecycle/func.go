@@ -8,14 +8,18 @@ import (
 	"github.com/pkg/errors"
 )
 
-var _ Actor = (*FuncActor)(nil)
+var (
+	_ Actor                  = (*FuncActor)(nil)
+	_ RequiresReadinessProbe = (*FuncActor)(nil)
+)
 
 // FuncActor wraps start and stop functions into an Actor implementation.
 // This is useful for creating actors from simple functions without defining new types.
 type FuncActor struct {
-	startFunc func(ctx context.Context) error
-	stopFunc  func(ctx context.Context) error
-	name      string
+	startFunc      func(ctx context.Context) error
+	stopFunc       func(ctx context.Context) error
+	name           string
+	readinessProbe *ReadinessProbe
 }
 
 // NewFuncActor creates a new FuncActor with the provided start and stop functions.
@@ -38,7 +42,14 @@ func (f *FuncActor) GetName() string {
 }
 
 // Start calls the wrapped start function.
-func (f *FuncActor) Start(ctx context.Context) error {
+// If readiness probe is enabled via WithReadiness, it signals completion after start.
+func (f *FuncActor) Start(ctx context.Context) (xerr error) {
+	defer func() {
+		if f.readinessProbe != nil {
+			f.readinessProbe.Signal(xerr)
+		}
+	}()
+
 	if f.startFunc != nil {
 		return f.startFunc(ctx)
 	}
@@ -56,6 +67,20 @@ func (f *FuncActor) Stop(ctx context.Context) error {
 // acquired resources during construction and needs cleanup regardless of whether Start is called.
 func (f *FuncActor) RequiresStop() bool {
 	return f.startFunc == nil && f.stopFunc != nil
+}
+
+// WithReadiness enables readiness probe for this actor.
+// Returns the actor for method chaining.
+func (f *FuncActor) WithReadiness() *FuncActor {
+	if f.readinessProbe == nil {
+		f.readinessProbe = NewReadinessProbe()
+	}
+	return f
+}
+
+// RequiresReadinessProbe returns the readiness probe if enabled via WithReadiness.
+func (f *FuncActor) RequiresReadinessProbe() *ReadinessProbe {
+	return f.readinessProbe
 }
 
 var _ Service = (*FuncService)(nil)

@@ -299,6 +299,47 @@ func TestRequiresReadinessProbeInterface(t *testing.T) {
 	})
 }
 
+func TestFuncActorWithReadiness(t *testing.T) {
+	t.Run("WithReadiness enables probe", func(t *testing.T) {
+		actor := lifecycle.NewFuncActor(nil, nil).WithReadiness()
+		probe := actor.RequiresReadinessProbe()
+		require.NotNil(t, probe)
+	})
+
+	t.Run("without WithReadiness returns nil", func(t *testing.T) {
+		actor := lifecycle.NewFuncActor(nil, nil)
+		probe := actor.RequiresReadinessProbe()
+		require.Nil(t, probe)
+	})
+
+	t.Run("lifecycle waits for FuncActor readiness", func(t *testing.T) {
+		lc := lifecycle.New()
+
+		// Add a dummy service
+		lc.Add(lifecycle.NewFuncService(func(ctx context.Context) error {
+			<-ctx.Done()
+			return nil
+		}).WithName("dummy"))
+
+		// Add FuncActor with readiness - Signal is called automatically after Start
+		var startExecuted bool
+		actor := lifecycle.NewFuncActor(func(ctx context.Context) error {
+			time.Sleep(50 * time.Millisecond)
+			startExecuted = true
+			return nil
+		}, nil).WithName("actor-with-readiness").WithReadiness()
+
+		lc.Add(actor)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+
+		err := lc.Start(ctx)
+		require.NoError(t, err)
+		require.True(t, startExecuted)
+	})
+}
+
 func TestReadinessProbe(t *testing.T) {
 	t.Run("Signal with nil works correctly", func(t *testing.T) {
 		probe := lifecycle.NewReadinessProbe()
