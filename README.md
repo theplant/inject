@@ -247,44 +247,17 @@ lc.Provide(lifecycle.SetupSignal)
 
 #### Readiness Probe
 
-The lifecycle supports optional readiness probes to block startup until services are ready. There are two ways to provide probes:
-
-**1. Using `*inject.Element[*ReadinessProbe]` pattern:**
+The lifecycle supports optional readiness probes to block startup until services are ready. Use `FuncActor.WithReadiness()` to enable automatic readiness signaling - the probe is signaled when `Start()` completes:
 
 ```go
-func SetupHTTPReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) *inject.Element[*lifecycle.ReadinessProbe] {
-    probe := lifecycle.NewReadinessProbe()
+func SetupHTTPReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) {
+    addr := fmt.Sprintf("http://%s/health", listener.Addr().String())
 
-    lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) (xerr error) {
-        defer func() { probe.Signal(xerr) }()
-        return WaitForReady(ctx, fmt.Sprintf("http://%s/health", listener.Addr().String()))
-    }, nil).WithName("http-readiness"))
-
-    return inject.NewElement(probe)
+    lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
+        return WaitForReady(ctx, addr)
+    }, nil).WithName("http-readiness").WithReadiness())
 }
 ```
-
-**2. Implementing `RequiresReadinessProbe` interface on actors:**
-
-```go
-// Example: Custom actor with readiness probe
-type HTTPServer struct {
-    probe *lifecycle.ReadinessProbe
-    // ...
-}
-
-func (s *HTTPServer) RequiresReadinessProbe() *lifecycle.ReadinessProbe {
-    return s.probe
-}
-
-func (s *HTTPServer) Start(ctx context.Context) error {
-    // Signal ready when server is listening
-    defer func() { s.probe.Signal(nil) }()
-    return s.server.ListenAndServe()
-}
-```
-
-**Note:** `*lifecycle.Lifecycle` itself implements `RequiresReadinessProbe`. When a nested lifecycle completes its `Start()`, it automatically signals its readiness probe. This allows parent lifecycles to wait for nested lifecycles to be ready.
 
 When using `lifecycle.Start()`, the lifecycle will block until all probes signal ready:
 
@@ -296,10 +269,7 @@ lc, err := lifecycle.Start(context.Background(),
 )
 ```
 
-The `Signal(err error)` method supports both success and failure cases:
-
-- `Signal(nil)` - Signals that the service is ready
-- `Signal(err)` - Signals that the service failed to become ready (the error will be returned by `Start()`)
+If the `Actor.Start()` function returns an error, the probe signals failure and `lifecycle.Start()` returns that error.
 
 #### Nested Lifecycle
 
