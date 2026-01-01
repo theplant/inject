@@ -2,6 +2,8 @@ package inject
 
 import "context"
 
+var _ Resolver = (*Injector)(nil)
+
 // Resolver is an interface for resolving dependencies from an injector.
 type Resolver interface {
 	Resolve(...any) error

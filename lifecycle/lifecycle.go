@@ -67,6 +67,7 @@ type RequiresStop interface {
 
 // Lifecycle also implements Service and RequiresReadinessProbe interfaces.
 var (
+	_ inject.Resolver        = (*Lifecycle)(nil)
 	_ Service                = (*Lifecycle)(nil)
 	_ RequiresReadinessProbe = (*Lifecycle)(nil)
 )
