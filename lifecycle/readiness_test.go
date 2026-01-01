@@ -107,7 +107,7 @@ func WaitForReady(ctx context.Context, endpoint string) error {
 			if resp != nil {
 				defer resp.Body.Close()
 			}
-			if err == nil && resp.StatusCode == http.StatusOK {
+			if err == nil && resp != nil && resp.StatusCode == http.StatusOK {
 				return nil
 			}
 		}
