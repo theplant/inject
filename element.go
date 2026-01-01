@@ -21,6 +21,11 @@ type Element[T any] struct {
 	Value T
 }
 
+// NewElement creates a new Element[T] with the given value.
+func NewElement[T any](value T) Element[T] {
+	return Element[T]{Value: value}
+}
+
 // Slice is a container type that collects all Element[T] values into a slice of T.
 // Use this type to resolve multiple Element[T] providers at once.
 type Slice[T any] struct {

@@ -70,7 +70,7 @@ func SetupReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) inject.
 		return nil
 	}, nil).WithName("readiness-probe"))
 
-	return inject.Element[*lifecycle.ReadinessProbe]{Value: probe}
+	return inject.NewElement(probe)
 }
 
 func SetupFailingReadinessProbe(lc *lifecycle.Lifecycle) inject.Element[*lifecycle.ReadinessProbe] {
@@ -89,7 +89,7 @@ func SetupFailingReadinessProbe(lc *lifecycle.Lifecycle) inject.Element[*lifecyc
 		return nil
 	}, nil).WithName("failing-readiness-probe"))
 
-	return inject.Element[*lifecycle.ReadinessProbe]{Value: probe}
+	return inject.NewElement(probe)
 }
 
 // WaitForReady polls the given endpoint until it returns a successful response or context is cancelled.
@@ -193,7 +193,7 @@ func TestMultipleReadinessProbes(t *testing.T) {
 					probe.Signal(nil)
 					return nil
 				}, nil).WithName("probe1"))
-				return inject.Element[*lifecycle.ReadinessProbe]{Value: probe}
+				return inject.NewElement(probe)
 			},
 			// Second probe - signals after 100ms
 			func(lc *lifecycle.Lifecycle) inject.Element[*lifecycle.ReadinessProbe] {
@@ -204,7 +204,7 @@ func TestMultipleReadinessProbes(t *testing.T) {
 					probe.Signal(nil)
 					return nil
 				}, nil).WithName("probe2"))
-				return inject.Element[*lifecycle.ReadinessProbe]{Value: probe}
+				return inject.NewElement(probe)
 			},
 		)
 		require.NoError(t, err)
@@ -240,7 +240,7 @@ func TestMultipleReadinessProbes(t *testing.T) {
 					probe.Signal(nil)
 					return nil
 				}, nil).WithName("probe1"))
-				return inject.Element[*lifecycle.ReadinessProbe]{Value: probe}
+				return inject.NewElement(probe)
 			},
 			// Second probe - fails
 			func(lc *lifecycle.Lifecycle) inject.Element[*lifecycle.ReadinessProbe] {
@@ -250,7 +250,7 @@ func TestMultipleReadinessProbes(t *testing.T) {
 					probe.Signal(errors.New("probe2 failed"))
 					return nil
 				}, nil).WithName("probe2"))
-				return inject.Element[*lifecycle.ReadinessProbe]{Value: probe}
+				return inject.NewElement(probe)
 			},
 		)
 		require.Error(t, err)
