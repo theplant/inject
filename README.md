@@ -247,35 +247,40 @@ lc.Provide(lifecycle.SetupSignal)
 
 #### Readiness Probe
 
-The lifecycle supports optional readiness probes to block startup until services are ready:
+The lifecycle supports optional readiness probes to block startup until services are ready. Use `inject.Element[*ReadinessProbe]` to provide one or more probes:
 
 ```go
-func SetupReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) *lifecycle.ReadinessProbe {
+func SetupHTTPReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) inject.Element[*lifecycle.ReadinessProbe] {
     probe := lifecycle.NewReadinessProbe()
 
-    // Add a readiness check actor that signals when HTTP server is ready
-    lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
-        err := WaitForReady(ctx, fmt.Sprintf("http://%s/health", listener.Addr().String()))
-        if err != nil {
-            return err
-        }
-        // Signal success (nil error means ready)
-        probe.Signal(nil)
-        return nil
-    }, nil).WithName("readiness-probe"))
+    lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) (xerr error) {
+        defer func() {  probe.Signal(xerr) }()
+        return WaitForReady(ctx, fmt.Sprintf("http://%s/health", listener.Addr().String()))
+    }, nil).WithName("http-readiness"))
 
-    return probe
+    return inject.Element[*lifecycle.ReadinessProbe]{Value: probe}
+}
+
+func SetupDatabaseProbe(lc *lifecycle.Lifecycle, db *Database) inject.Element[*lifecycle.ReadinessProbe] {
+    probe := lifecycle.NewReadinessProbe()
+
+    lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) (xerr error) {
+        defer func() {  probe.Signal(xerr) }()
+        return db.Ping(ctx)
+    }, nil).WithName("db-readiness"))
+
+    return inject.Element[*lifecycle.ReadinessProbe]{Value: probe}
 }
 ```
 
-When using `lifecycle.Start()`, the lifecycle will block until `Signal()` is called on the probe:
+When using `lifecycle.Start()`, the lifecycle will block until all probes signal ready:
 
 ```go
-// Start blocks until readiness probe signals ready
 lc, err := lifecycle.Start(context.Background(),
     SetupHTTPListener,
     SetupHTTPServer,
-    SetupReadinessProbe,  // Optional - if not provided, Start returns immediately
+    SetupHTTPReadinessProbe,
+    SetupDatabaseProbe,
 )
 ```
 

@@ -139,17 +139,20 @@ func (lc *Lifecycle) Start(ctx context.Context) error {
 		return err
 	}
 
-	var readnessProbe *ReadinessProbe
-	if err := lc.ResolveContext(ctx, &readnessProbe); err != nil && !errors.Is(err, inject.ErrTypeNotProvided) {
+	// Resolve all readiness probes using Element/Slice pattern
+	var probes inject.Slice[*ReadinessProbe]
+	if err := lc.ResolveContext(ctx, &probes); err != nil && !errors.Is(err, inject.ErrTypeNotProvided) {
 		return err
 	}
-	if readnessProbe != nil {
+
+	// Wait for all probes to signal ready
+	for _, probe := range probes.Values {
 		select {
 		case <-ctx.Done():
 			return errors.WithStack(ctx.Err())
-		case <-readnessProbe.doneC:
-			if readnessProbe.err != nil {
-				return errors.WithStack(readnessProbe.err)
+		case <-probe.doneC:
+			if probe.err != nil {
+				return errors.WithStack(probe.err)
 			}
 		}
 	}

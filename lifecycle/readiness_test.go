@@ -10,6 +10,7 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/require"
+	"github.com/theplant/inject"
 	"github.com/theplant/inject/lifecycle"
 )
 
@@ -31,7 +32,7 @@ func SetupHTTPServer(lc *lifecycle.Lifecycle, listener net.Listener) (*http.Serv
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	})
 
 	server := &http.Server{
@@ -51,26 +52,28 @@ func SetupHTTPServer(lc *lifecycle.Lifecycle, listener net.Listener) (*http.Serv
 	return server, nil
 }
 
-func SetupReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) *lifecycle.ReadinessProbe {
+func SetupReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) inject.Element[*lifecycle.ReadinessProbe] {
 	probe := lifecycle.NewReadinessProbe()
 
 	addr := fmt.Sprintf("http://%s/health", listener.Addr().String())
 
 	// Add a readiness check actor that signals when HTTP server is ready
-	lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
+	lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) (xerr error) {
+		defer func() {
+			probe.Signal(xerr)
+		}()
 		err := WaitForReady(ctx, addr)
 		if err != nil {
 			return err
 		}
 		time.Sleep(100 * time.Millisecond)
-		probe.Signal(nil) // Signal success
 		return nil
 	}, nil).WithName("readiness-probe"))
 
-	return probe
+	return inject.Element[*lifecycle.ReadinessProbe]{Value: probe}
 }
 
-func SetupFailingReadinessProbe(lc *lifecycle.Lifecycle) *lifecycle.ReadinessProbe {
+func SetupFailingReadinessProbe(lc *lifecycle.Lifecycle) inject.Element[*lifecycle.ReadinessProbe] {
 	probe := lifecycle.NewReadinessProbe()
 
 	// Add a dummy service to satisfy lifecycle requirements
@@ -86,7 +89,7 @@ func SetupFailingReadinessProbe(lc *lifecycle.Lifecycle) *lifecycle.ReadinessPro
 		return nil
 	}, nil).WithName("failing-readiness-probe"))
 
-	return probe
+	return inject.Element[*lifecycle.ReadinessProbe]{Value: probe}
 }
 
 // WaitForReady polls the given endpoint until it returns a successful response or context is cancelled.
@@ -171,6 +174,90 @@ func TestSetupReadinessProbe(t *testing.T) {
 	})
 }
 
+func TestMultipleReadinessProbes(t *testing.T) {
+	t.Run("Start waits for all probes to be ready", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var probe1Ready, probe2Ready bool
+
+		lc, err := lifecycle.Start(ctx,
+			SetupHTTPListener,
+			SetupHTTPServer,
+			// First probe - signals after 50ms
+			func(lc *lifecycle.Lifecycle) inject.Element[*lifecycle.ReadinessProbe] {
+				probe := lifecycle.NewReadinessProbe()
+				lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
+					time.Sleep(50 * time.Millisecond)
+					probe1Ready = true
+					probe.Signal(nil)
+					return nil
+				}, nil).WithName("probe1"))
+				return inject.Element[*lifecycle.ReadinessProbe]{Value: probe}
+			},
+			// Second probe - signals after 100ms
+			func(lc *lifecycle.Lifecycle) inject.Element[*lifecycle.ReadinessProbe] {
+				probe := lifecycle.NewReadinessProbe()
+				lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
+					time.Sleep(100 * time.Millisecond)
+					probe2Ready = true
+					probe.Signal(nil)
+					return nil
+				}, nil).WithName("probe2"))
+				return inject.Element[*lifecycle.ReadinessProbe]{Value: probe}
+			},
+		)
+		require.NoError(t, err)
+		require.True(t, lc.IsStarted())
+
+		// Both probes should be ready after Start returns
+		require.True(t, probe1Ready, "probe1 should be ready")
+		require.True(t, probe2Ready, "probe2 should be ready")
+
+		require.NoError(t, lc.Stop(context.Background()))
+	})
+
+	t.Run("Start fails if any probe fails", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		type dummyService struct{}
+
+		_, err := lifecycle.Start(ctx,
+			// Dummy service to satisfy lifecycle requirements
+			func(lc *lifecycle.Lifecycle) *dummyService {
+				lc.Add(lifecycle.NewFuncService(func(ctx context.Context) error {
+					<-ctx.Done()
+					return ctx.Err()
+				}).WithName("dummy-service"))
+				return &dummyService{}
+			},
+			// First probe - succeeds
+			func(lc *lifecycle.Lifecycle) inject.Element[*lifecycle.ReadinessProbe] {
+				probe := lifecycle.NewReadinessProbe()
+				lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
+					time.Sleep(20 * time.Millisecond)
+					probe.Signal(nil)
+					return nil
+				}, nil).WithName("probe1"))
+				return inject.Element[*lifecycle.ReadinessProbe]{Value: probe}
+			},
+			// Second probe - fails
+			func(lc *lifecycle.Lifecycle) inject.Element[*lifecycle.ReadinessProbe] {
+				probe := lifecycle.NewReadinessProbe()
+				lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
+					time.Sleep(50 * time.Millisecond)
+					probe.Signal(errors.New("probe2 failed"))
+					return nil
+				}, nil).WithName("probe2"))
+				return inject.Element[*lifecycle.ReadinessProbe]{Value: probe}
+			},
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "probe2 failed")
+	})
+}
+
 func TestReadinessProbe(t *testing.T) {
 	t.Run("Signal with nil works correctly", func(t *testing.T) {
 		probe := lifecycle.NewReadinessProbe()
@@ -202,19 +289,19 @@ func TestReadinessProbe(t *testing.T) {
 
 	t.Run("Only one signal can be sent", func(t *testing.T) {
 		probe := lifecycle.NewReadinessProbe()
-		
+
 		probe.Signal(nil)
 		probe.Signal(errors.New("should be ignored"))
-		
+
 		require.Nil(t, probe.Error(), "Error should still be nil after first signal")
 	})
 
 	t.Run("Second signal after first is ignored", func(t *testing.T) {
 		probe := lifecycle.NewReadinessProbe()
-		
+
 		probe.Signal(errors.New("first error"))
 		probe.Signal(nil) // Should be ignored
-		
+
 		require.Error(t, probe.Error(), "Error should still be set after first signal")
 		require.Contains(t, probe.Error().Error(), "first error")
 	})
