@@ -25,7 +25,7 @@ func TestVoidCtor(t *testing.T) {
 		var voids Slice[*Void]
 		err = inj.Resolve(&voids)
 		require.NoError(t, err)
-		require.Len(t, voids[:], 1)
+		require.Len(t, voids, 1)
 		require.True(t, executed)
 	})
 
@@ -73,7 +73,7 @@ func TestVoidCtor(t *testing.T) {
 		var voids Slice[*Void]
 		err = inj.Resolve(&voids)
 		require.NoError(t, err)
-		require.Len(t, voids[:], 3)
+		require.Len(t, voids, 3)
 		require.Equal(t, []int{1, 2, 3}, order)
 	})
 

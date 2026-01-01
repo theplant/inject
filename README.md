@@ -448,7 +448,7 @@ err = inj.Provide(func(cfg *Config) {
 err = inj.Build()
 
 // Or resolve explicitly to trigger void constructors
-var voids inject.Slice[*Void]
+var voids inject.Slice[*inject.Void]
 inj.Resolve(&voids)
 ```
 
