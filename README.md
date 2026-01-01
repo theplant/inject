@@ -10,6 +10,7 @@ The `inject` package provides a powerful and intuitive dependency injection fram
 - `Apply`: Used to apply dependencies to a struct.
 - `Build`: Used to eagerly build all provided dependencies.
 - `SetParent`: Used to set the parent injector.
+- `Element[T]`: Used to provide multiple values of the same type, resolved as `Slice[T]`.
 - Thread safety ensured
 - Supports injection through the `inject` tag of struct fields
 
@@ -283,6 +284,63 @@ The `Signal(err error)` method supports both success and failure cases:
 - `Signal(nil)` - Signals that the service is ready
 - `Signal(err)` - Signals that the service failed to become ready (the error will be returned by `Start()`)
 
+#### Nested Lifecycle
+
+Since `*lifecycle.Lifecycle` itself implements the `Service` interface, you can nest lifecycles to create modular subsystems:
+
+```go
+// Create a subsystem lifecycle for database-related services
+func SetupDatabaseSubsystem(parent *lifecycle.Lifecycle, conf *DatabaseConfig) *DatabaseSubsystem {
+    // Create a nested lifecycle
+    sub := lifecycle.New()
+
+    // Provide dependencies to the nested lifecycle
+    sub.Provide(
+        func() *DatabaseConfig { return conf },
+        func(lc *lifecycle.Lifecycle, conf *DatabaseConfig) *Database {
+            db := &Database{}
+            lc.Add(lifecycle.NewFuncActor(
+                func(_ context.Context) error { return db.Connect(conf.DatabaseURL) },
+                func(_ context.Context) error { return db.Close() },
+            ).WithName("database"))
+            return db
+        },
+        func(lc *lifecycle.Lifecycle, db *Database) *MigrationRunner {
+            runner := &MigrationRunner{db: db}
+            lc.Add(lifecycle.NewFuncActor(
+                func(_ context.Context) error { return runner.Run() },
+                nil,
+            ).WithName("migrations"))
+            return runner
+        },
+    )
+
+    // Add the nested lifecycle as a service to the parent
+    parent.Add(sub.WithName("database-subsystem"))
+
+    return &DatabaseSubsystem{lifecycle: sub}
+}
+
+// Main application
+func main() {
+    if err := lifecycle.Serve(context.Background(),
+        lifecycle.SetupSignal,
+        func() *Config { return loadConfig() },
+        func(conf *Config) *DatabaseConfig { return conf.DatabaseConfig },
+        SetupDatabaseSubsystem,  // Nested lifecycle
+        SetupHTTPServer,
+    ); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+Benefits of nested lifecycles:
+
+- **Modularity**: Group related services into self-contained subsystems
+- **Isolation**: Each subsystem has its own dependency injection scope
+- **Coordinated shutdown**: Parent lifecycle manages shutdown of all nested lifecycles
+
 ### Configuration
 
 #### Timeouts
@@ -326,6 +384,29 @@ func(ctx context.Context) error {
     }
     return cleanup()
 }
+```
+
+## Element - Multiple Values of Same Type
+
+The `Element[T]` type allows you to provide multiple values of the same type `T`. When resolving `Slice[T]`, all `Element[T]` values are automatically collected. Element providers can have dependencies like regular providers.
+
+```go
+inj := inject.New()
+
+err := inj.Provide(
+    func() *Config { return &Config{Prefix: "api-"} },
+    // Multiple Element[T] providers with dependencies
+    func(cfg *Config) inject.Element[string] {
+        return inject.Element[string]{Value: cfg.Prefix + "route1"}
+    },
+    func(cfg *Config) inject.Element[string] {
+        return inject.Element[string]{Value: cfg.Prefix + "route2"}
+    },
+)
+
+// Resolve as Slice[T]
+var routes inject.Slice[string]
+inj.Resolve(&routes) // routes.Values = []string{"api-route1", "api-route2"}
 ```
 
 ## Important Notes
