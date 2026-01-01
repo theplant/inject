@@ -59,8 +59,9 @@ func appendDependencyToPath(ctx context.Context, key typeKey) context.Context {
 }
 
 var (
-	typeError   = reflect.TypeOf((*error)(nil)).Elem()
-	typeContext = reflect.TypeOf((*context.Context)(nil)).Elem()
+	typeError       = reflect.TypeOf((*error)(nil)).Elem()
+	typeContext     = reflect.TypeOf((*context.Context)(nil)).Elem()
+	typeElementVoid = reflect.TypeOf((*Element[*Void])(nil))
 )
 
 // IsTypeAllowed checks if a type is allowed as a function input or output parameter.
@@ -145,10 +146,6 @@ func (inj *Injector) unsafeProvide(ctor any) error {
 	outputTypes, err := getValidOutputTypes(rt)
 	if err != nil {
 		return err
-	}
-
-	if len(outputTypes) == 0 {
-		return errors.Wrap(ErrInvalidProvider, "no valid output types")
 	}
 
 	p := &provider{
@@ -239,6 +236,11 @@ func (inj *Injector) invoke(ctx context.Context, f any) ([]reflect.Value, error)
 		if !rvErr.IsNil() {
 			return outs, rvErr.Interface().(error)
 		}
+	}
+
+	// If no outputs (void function), return *Element[*Void]
+	if len(outs) == 0 {
+		outs = append(outs, reflect.ValueOf(NewVoidElement()))
 	}
 
 	return outs, nil
@@ -569,6 +571,7 @@ func (inj *Injector) BuildContext(ctx context.Context, ctors ...any) error {
 // performing error type position validation and filtering out error types.
 // For Element[T] types, duplicates are allowed (same type can appear multiple times).
 // For normal types, duplicates are deduplicated.
+// If the function has no return values (or only returns error), it returns *Element[*Void].
 func getValidOutputTypes(rt reflect.Type) ([]reflect.Type, error) {
 	if rt.Kind() != reflect.Func {
 		return nil, nil
@@ -602,6 +605,11 @@ func getValidOutputTypes(rt reflect.Type) ([]reflect.Type, error) {
 			outputTypes = append(outputTypes, outType)
 			seen[outType] = true
 		}
+	}
+
+	// If no valid output types, treat as returning *Element[*Void]
+	if len(outputTypes) == 0 {
+		outputTypes = append(outputTypes, typeElementVoid)
 	}
 
 	return outputTypes, nil

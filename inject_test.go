@@ -34,14 +34,16 @@ func TestProvide(t *testing.T) {
 		require.ErrorIs(t, err, ErrInvalidProvider)
 	}
 	{
+		// void ctor is now valid, treated as returning *Element[*Void]
 		injector := New()
 		err := injector.Provide(func() {})
-		require.ErrorIs(t, err, ErrInvalidProvider)
+		require.NoError(t, err)
 	}
 	{
+		// ctor returning only error is now valid, treated as returning *Element[*Void]
 		injector := New()
 		err := injector.Provide(func() error { return nil })
-		require.ErrorIs(t, err, ErrInvalidProvider)
+		require.NoError(t, err)
 	}
 	{
 		injector := New()
@@ -1201,10 +1203,10 @@ func TestErrorTypePositionValidation(t *testing.T) {
 	}
 
 	{
-		// Test only error return (invalid)
+		// Test only error return is now valid (treated as returning *Element[*Void])
 		injector := New()
 		err := injector.Provide(func() error { return nil })
-		require.ErrorIs(t, err, ErrInvalidProvider)
+		require.NoError(t, err)
 	}
 }
 

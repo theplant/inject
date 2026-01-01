@@ -10,7 +10,6 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/require"
-	"github.com/theplant/inject"
 	"github.com/theplant/inject/lifecycle"
 )
 
@@ -52,30 +51,21 @@ func SetupHTTPServer(lc *lifecycle.Lifecycle, listener net.Listener) (*http.Serv
 	return server, nil
 }
 
-func SetupReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) *inject.Element[*lifecycle.ReadinessProbe] {
-	probe := lifecycle.NewReadinessProbe()
-
+func SetupReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) {
 	addr := fmt.Sprintf("http://%s/health", listener.Addr().String())
 
 	// Add a readiness check actor that signals when HTTP server is ready
-	lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) (xerr error) {
-		defer func() {
-			probe.Signal(xerr)
-		}()
+	lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
 		err := WaitForReady(ctx, addr)
 		if err != nil {
 			return err
 		}
 		time.Sleep(100 * time.Millisecond)
 		return nil
-	}, nil).WithName("readiness-probe"))
-
-	return inject.NewElement(probe)
+	}, nil).WithName("readiness-probe").WithReadiness())
 }
 
-func SetupFailingReadinessProbe(lc *lifecycle.Lifecycle) *inject.Element[*lifecycle.ReadinessProbe] {
-	probe := lifecycle.NewReadinessProbe()
-
+func SetupFailingReadinessProbe(lc *lifecycle.Lifecycle) {
 	// Add a dummy service to satisfy lifecycle requirements
 	lc.Add(lifecycle.NewFuncService(func(ctx context.Context) error {
 		<-ctx.Done()
@@ -85,11 +75,8 @@ func SetupFailingReadinessProbe(lc *lifecycle.Lifecycle) *inject.Element[*lifecy
 	// Add a readiness check that always fails
 	lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
 		time.Sleep(50 * time.Millisecond)
-		probe.Signal(errors.New("readiness check failed"))
-		return nil
-	}, nil).WithName("failing-readiness-probe"))
-
-	return inject.NewElement(probe)
+		return errors.New("readiness check failed")
+	}, nil).WithName("failing-readiness-probe").WithReadiness())
 }
 
 // WaitForReady polls the given endpoint until it returns a successful response or context is cancelled.
@@ -185,26 +172,20 @@ func TestMultipleReadinessProbes(t *testing.T) {
 			SetupHTTPListener,
 			SetupHTTPServer,
 			// First probe - signals after 50ms
-			func(lc *lifecycle.Lifecycle) *inject.Element[*lifecycle.ReadinessProbe] {
-				probe := lifecycle.NewReadinessProbe()
+			func(lc *lifecycle.Lifecycle) {
 				lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
 					time.Sleep(50 * time.Millisecond)
 					probe1Ready = true
-					probe.Signal(nil)
 					return nil
-				}, nil).WithName("probe1"))
-				return inject.NewElement(probe)
+				}, nil).WithName("probe1").WithReadiness())
 			},
 			// Second probe - signals after 100ms
-			func(lc *lifecycle.Lifecycle) *inject.Element[*lifecycle.ReadinessProbe] {
-				probe := lifecycle.NewReadinessProbe()
+			func(lc *lifecycle.Lifecycle) {
 				lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
 					time.Sleep(100 * time.Millisecond)
 					probe2Ready = true
-					probe.Signal(nil)
 					return nil
-				}, nil).WithName("probe2"))
-				return inject.NewElement(probe)
+				}, nil).WithName("probe2").WithReadiness())
 			},
 		)
 		require.NoError(t, err)
@@ -233,24 +214,18 @@ func TestMultipleReadinessProbes(t *testing.T) {
 				return &dummyService{}
 			},
 			// First probe - succeeds
-			func(lc *lifecycle.Lifecycle) *inject.Element[*lifecycle.ReadinessProbe] {
-				probe := lifecycle.NewReadinessProbe()
+			func(lc *lifecycle.Lifecycle) {
 				lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
 					time.Sleep(20 * time.Millisecond)
-					probe.Signal(nil)
 					return nil
-				}, nil).WithName("probe1"))
-				return inject.NewElement(probe)
+				}, nil).WithName("probe1").WithReadiness())
 			},
 			// Second probe - fails
-			func(lc *lifecycle.Lifecycle) *inject.Element[*lifecycle.ReadinessProbe] {
-				probe := lifecycle.NewReadinessProbe()
+			func(lc *lifecycle.Lifecycle) {
 				lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
 					time.Sleep(50 * time.Millisecond)
-					probe.Signal(errors.New("probe2 failed"))
-					return nil
-				}, nil).WithName("probe2"))
-				return inject.NewElement(probe)
+					return errors.New("probe2 failed")
+				}, nil).WithName("probe2").WithReadiness())
 			},
 		)
 		require.Error(t, err)
@@ -296,6 +271,47 @@ func TestRequiresReadinessProbeInterface(t *testing.T) {
 		t.Logf("Start completed in %v", elapsed)
 
 		require.NoError(t, lc.Stop(context.Background()))
+	})
+}
+
+func TestFuncActorWithReadiness(t *testing.T) {
+	t.Run("WithReadiness enables probe", func(t *testing.T) {
+		actor := lifecycle.NewFuncActor(nil, nil).WithReadiness()
+		probe := actor.RequiresReadinessProbe()
+		require.NotNil(t, probe)
+	})
+
+	t.Run("without WithReadiness returns nil", func(t *testing.T) {
+		actor := lifecycle.NewFuncActor(nil, nil)
+		probe := actor.RequiresReadinessProbe()
+		require.Nil(t, probe)
+	})
+
+	t.Run("lifecycle waits for FuncActor readiness", func(t *testing.T) {
+		lc := lifecycle.New()
+
+		// Add a dummy service
+		lc.Add(lifecycle.NewFuncService(func(ctx context.Context) error {
+			<-ctx.Done()
+			return nil
+		}).WithName("dummy"))
+
+		// Add FuncActor with readiness - Signal is called automatically after Start
+		var startExecuted bool
+		actor := lifecycle.NewFuncActor(func(ctx context.Context) error {
+			time.Sleep(50 * time.Millisecond)
+			startExecuted = true
+			return nil
+		}, nil).WithName("actor-with-readiness").WithReadiness()
+
+		lc.Add(actor)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+
+		err := lc.Start(ctx)
+		require.NoError(t, err)
+		require.True(t, startExecuted)
 	})
 }
 

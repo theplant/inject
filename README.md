@@ -247,44 +247,17 @@ lc.Provide(lifecycle.SetupSignal)
 
 #### Readiness Probe
 
-The lifecycle supports optional readiness probes to block startup until services are ready. There are two ways to provide probes:
-
-**1. Using `*inject.Element[*ReadinessProbe]` pattern:**
+The lifecycle supports optional readiness probes to block startup until services are ready. Use `FuncActor.WithReadiness()` to enable automatic readiness signaling - the probe is signaled when `Start()` completes:
 
 ```go
-func SetupHTTPReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) *inject.Element[*lifecycle.ReadinessProbe] {
-    probe := lifecycle.NewReadinessProbe()
+func SetupHTTPReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) {
+    addr := fmt.Sprintf("http://%s/health", listener.Addr().String())
 
-    lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) (xerr error) {
-        defer func() { probe.Signal(xerr) }()
-        return WaitForReady(ctx, fmt.Sprintf("http://%s/health", listener.Addr().String()))
-    }, nil).WithName("http-readiness"))
-
-    return inject.NewElement(probe)
+    lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
+        return WaitForReady(ctx, addr)
+    }, nil).WithName("http-readiness").WithReadiness())
 }
 ```
-
-**2. Implementing `RequiresReadinessProbe` interface on actors:**
-
-```go
-// Example: Custom actor with readiness probe
-type HTTPServer struct {
-    probe *lifecycle.ReadinessProbe
-    // ...
-}
-
-func (s *HTTPServer) RequiresReadinessProbe() *lifecycle.ReadinessProbe {
-    return s.probe
-}
-
-func (s *HTTPServer) Start(ctx context.Context) error {
-    // Signal ready when server is listening
-    defer func() { s.probe.Signal(nil) }()
-    return s.server.ListenAndServe()
-}
-```
-
-**Note:** `*lifecycle.Lifecycle` itself implements `RequiresReadinessProbe`. When a nested lifecycle completes its `Start()`, it automatically signals its readiness probe. This allows parent lifecycles to wait for nested lifecycles to be ready.
 
 When using `lifecycle.Start()`, the lifecycle will block until all probes signal ready:
 
@@ -296,10 +269,7 @@ lc, err := lifecycle.Start(context.Background(),
 )
 ```
 
-The `Signal(err error)` method supports both success and failure cases:
-
-- `Signal(nil)` - Signals that the service is ready
-- `Signal(err)` - Signals that the service failed to become ready (the error will be returned by `Start()`)
+If the `Actor.Start()` function returns an error, the probe signals failure and `lifecycle.Start()` returns that error.
 
 #### Nested Lifecycle
 
@@ -453,6 +423,50 @@ inj.Provide(
 )
 var services inject.Slice[*Service]
 inj.Resolve(&services) // services = []*Service{&Service{...}, nil, &Service{...}}
+```
+
+## Void Constructors
+
+The `Void` type allows you to register constructors that don't return any value (or only return `error`). These are useful for "side-effect only" operations like modifying configuration or performing initialization tasks.
+
+When a constructor has no return type (or only returns `error`), it is automatically treated as returning `*Element[*Void]`.
+
+```go
+inj := inject.New()
+
+// Provide a config
+err := inj.Provide(func() *Config {
+    return &Config{Debug: false}
+})
+
+// Void constructor - modifies config as side effect
+err = inj.Provide(func(cfg *Config) {
+    cfg.Debug = true  // Modify config
+})
+
+// Execute all constructors via Build
+err = inj.Build()
+
+// Or resolve explicitly to trigger void constructors
+var voids inject.Slice[*inject.Void]
+inj.Resolve(&voids)
+```
+
+**Key behaviors:**
+
+- **Lazy execution**: Void constructors are not executed until `Build()` is called or `Slice[*Void]` is resolved
+- **Single execution**: Each void constructor is executed only once (like all other constructors)
+- **Dependency injection**: Void constructors can have dependencies injected as parameters
+- **Error handling**: Void constructors can return `error` as their only return type
+
+```go
+// Void constructor with error handling
+inj.Provide(func(cfg *Config) error {
+    if cfg.DatabaseURL == "" {
+        return errors.New("database URL is required")
+    }
+    return nil
+})
 ```
 
 ## Important Notes
