@@ -1,9 +1,6 @@
 package lifecycle
 
-import (
-	"sync"
-	"sync/atomic"
-)
+import "sync"
 
 // RequiresReadinessProbe is an interface for types that provide a readiness probe.
 // Actors implementing this interface will have their probes collected and
@@ -15,8 +12,9 @@ type RequiresReadinessProbe interface {
 // ReadinessProbe is a simple readiness probe that can be used to signal when the application is ready to serve traffic.
 type ReadinessProbe struct {
 	once  sync.Once
-	doneC chan struct{}       // Unified completion signal
-	err   atomic.Pointer[error] // Error if failed, nil if successful
+	doneC chan struct{} // Completion signal channel
+	mu    sync.RWMutex  // Protects err field
+	err   error         // Error if failed, nil if successful
 }
 
 // NewReadinessProbe creates a new readiness probe.
@@ -35,17 +33,16 @@ func (rp *ReadinessProbe) Done() <-chan struct{} {
 // Pass nil error to indicate success, or non-nil error to indicate failure.
 func (rp *ReadinessProbe) Signal(err error) {
 	rp.once.Do(func() {
-		if err != nil {
-			rp.err.Store(&err)
-		}
+		rp.mu.Lock()
+		rp.err = err
+		rp.mu.Unlock()
 		close(rp.doneC)
 	})
 }
 
 // Error returns the error that caused the readiness probe to fail, or nil if successful.
 func (rp *ReadinessProbe) Error() error {
-	if errPtr := rp.err.Load(); errPtr != nil {
-		return *errPtr
-	}
-	return nil
+	rp.mu.RLock()
+	defer rp.mu.RUnlock()
+	return rp.err
 }
