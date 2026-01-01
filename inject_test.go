@@ -1272,4 +1272,36 @@ func TestBuild(t *testing.T) {
 		err := injector.Build()
 		require.NoError(t, err)
 	})
+
+	t.Run("with ctors argument", func(t *testing.T) {
+		injector := New()
+
+		var resolved []string
+		// Build with ctors passed directly
+		err := injector.Build(
+			func() string { resolved = append(resolved, "string"); return "test" },
+			func() int { resolved = append(resolved, "int"); return 42 },
+		)
+		require.NoError(t, err)
+
+		// Verify constructors were called
+		require.Equal(t, []string{"string", "int"}, resolved)
+
+		// Verify all types are resolved
+		var s string
+		var i int
+		require.NoError(t, injector.Resolve(&s))
+		require.NoError(t, injector.Resolve(&i))
+		require.Equal(t, "test", s)
+		require.Equal(t, 42, i)
+	})
+
+	t.Run("with ctors argument error", func(t *testing.T) {
+		injector := New()
+
+		// Build with invalid ctor should fail
+		err := injector.Build("not a function")
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidProvider)
+	})
 }

@@ -65,8 +65,11 @@ type RequiresStop interface {
 	RequiresStop() bool
 }
 
-// Lifecycle also implements Service interface.
-var _ Service = (*Lifecycle)(nil)
+// Lifecycle also implements Service and RequiresReadinessProbe interfaces.
+var (
+	_ Service                = (*Lifecycle)(nil)
+	_ RequiresReadinessProbe = (*Lifecycle)(nil)
+)
 
 // Lifecycle manages the lifecycle of multiple actor instances.
 // It provides coordinated startup, monitoring, and cleanup of both simple actors and long-running services.
@@ -80,6 +83,7 @@ type Lifecycle struct {
 	served          atomic.Bool
 	mu              sync.RWMutex
 	logger          *slog.Logger
+	readinessProbe  *ReadinessProbe // Probe signaled when Start completes
 }
 
 // New creates a new Lifecycle instance with embedded injector and default stop timeout.
@@ -90,12 +94,20 @@ func New() *Lifecycle {
 		stopTimeout:     DefaultStopTimeout,
 		stopEachTimeout: DefaultStopEachTimeout,
 		logger:          slog.Default(),
+		readinessProbe:  NewReadinessProbe(),
 	}
 	lc.FuncService = NewFuncService(func(ctx context.Context) error {
 		return lc.Serve(ctx)
 	}).WithName("lifecycle")
 	_ = inj.Provide(func() *Lifecycle { return lc })
 	return lc
+}
+
+// RequiresReadinessProbe returns the readiness probe for this lifecycle.
+// The probe is signaled when Start completes successfully.
+// This allows parent lifecycles to wait for nested lifecycles to be ready.
+func (lc *Lifecycle) RequiresReadinessProbe() *ReadinessProbe {
+	return lc.readinessProbe
 }
 
 // WithStop is not supported for Lifecycle.
@@ -119,7 +131,10 @@ func collectServices(actors []Actor) []Service {
 }
 
 // Start builds the context and starts the lifecycle.
-func (lc *Lifecycle) Start(ctx context.Context) error {
+func (lc *Lifecycle) Start(ctx context.Context) (xerr error) {
+	// Signal readiness probe when Start completes
+	defer func() { lc.readinessProbe.Signal(xerr) }()
+
 	if err := lc.BuildContext(ctx); err != nil {
 		return err
 	}
@@ -134,7 +149,45 @@ func (lc *Lifecycle) Start(ctx context.Context) error {
 		return errors.WithStack(ErrNoServices)
 	}
 
-	return lc.FuncService.Start(ctx)
+	err := lc.FuncService.Start(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Collect all readiness probes from multiple sources
+	var allProbes []*ReadinessProbe
+
+	// 1. Resolve probes from Element/Slice pattern
+	var probes inject.Slice[*ReadinessProbe]
+	if err := lc.ResolveContext(ctx, &probes); err != nil && !errors.Is(err, inject.ErrTypeNotProvided) {
+		return err
+	}
+	if len(probes) > 0 {
+		allProbes = append(allProbes, probes...)
+	}
+
+	// 2. Collect probes from actors implementing RequiresReadinessProbe interface
+	for _, actor := range actors {
+		if prober, ok := actor.(RequiresReadinessProbe); ok {
+			if probe := prober.RequiresReadinessProbe(); probe != nil {
+				allProbes = append(allProbes, probe)
+			}
+		}
+	}
+
+	// Wait for all probes to signal ready
+	for _, probe := range allProbes {
+		select {
+		case <-ctx.Done():
+			return errors.WithStack(ctx.Err())
+		case <-probe.Done():
+			if err := probe.Error(); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // WithName sets the name for the lifecycle.
@@ -333,10 +386,19 @@ func Serve(ctx context.Context, ctors ...any) error {
 	return lc.Serve(ctx, ctors...)
 }
 
-// Start is a convenience function that creates a new Lifecycle instance, provides the constructors, and calls Start on it.
-func Start(ctx context.Context, ctors ...any) (*Lifecycle, error) {
+// Provide is a convenience function that creates a new Lifecycle instance and calls Provide on it.
+func Provide(ctors ...any) (*Lifecycle, error) {
 	lc := New()
 	if err := lc.Provide(ctors...); err != nil {
+		return nil, err
+	}
+	return lc, nil
+}
+
+// Start is a convenience function that creates a new Lifecycle instance, provides the constructors, and calls Start on it.
+func Start(ctx context.Context, ctors ...any) (*Lifecycle, error) {
+	lc, err := Provide(ctors...)
+	if err != nil {
 		return nil, err
 	}
 	if err := lc.Start(ctx); err != nil {

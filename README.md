@@ -10,6 +10,7 @@ The `inject` package provides a powerful and intuitive dependency injection fram
 - `Apply`: Used to apply dependencies to a struct.
 - `Build`: Used to eagerly build all provided dependencies.
 - `SetParent`: Used to set the parent injector.
+- `Element[T]`: Used to provide multiple values of the same type, resolved as `Slice[T]`.
 - Thread safety ensured
 - Supports injection through the `inject` tag of struct fields
 
@@ -34,6 +35,7 @@ The `lifecycle` subpackage provides a complete lifecycle management system that 
 - **Graceful Shutdown**: Actors stop in reverse order with timeout control
 - **Service Monitoring**: Automatic monitoring of long-running services
 - **Signal Handling**: Built-in OS signal handling for graceful shutdown
+- **Readiness Probes**: Optional blocking until services are ready to serve traffic
 - **Error Handling**: Comprehensive error handling and logging
 
 ### Basic Example
@@ -231,6 +233,131 @@ var setupHTTPServer = []any{
 lc.Provide(setupHTTPServer)
 ```
 
+#### Signal Handling
+
+```go
+import "syscall"
+
+// Custom signals
+lc.Provide(lifecycle.SetupSignalWith(syscall.SIGUSR1, syscall.SIGUSR2))
+
+// Default signals (SIGINT, SIGTERM)
+lc.Provide(lifecycle.SetupSignal)
+```
+
+#### Readiness Probe
+
+The lifecycle supports optional readiness probes to block startup until services are ready. There are two ways to provide probes:
+
+**1. Using `*inject.Element[*ReadinessProbe]` pattern:**
+
+```go
+func SetupHTTPReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) *inject.Element[*lifecycle.ReadinessProbe] {
+    probe := lifecycle.NewReadinessProbe()
+
+    lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) (xerr error) {
+        defer func() { probe.Signal(xerr) }()
+        return WaitForReady(ctx, fmt.Sprintf("http://%s/health", listener.Addr().String()))
+    }, nil).WithName("http-readiness"))
+
+    return inject.NewElement(probe)
+}
+```
+
+**2. Implementing `RequiresReadinessProbe` interface on actors:**
+
+```go
+// Example: Custom actor with readiness probe
+type HTTPServer struct {
+    probe *lifecycle.ReadinessProbe
+    // ...
+}
+
+func (s *HTTPServer) RequiresReadinessProbe() *lifecycle.ReadinessProbe {
+    return s.probe
+}
+
+func (s *HTTPServer) Start(ctx context.Context) error {
+    // Signal ready when server is listening
+    defer func() { s.probe.Signal(nil) }()
+    return s.server.ListenAndServe()
+}
+```
+
+**Note:** `*lifecycle.Lifecycle` itself implements `RequiresReadinessProbe`. When a nested lifecycle completes its `Start()`, it automatically signals its readiness probe. This allows parent lifecycles to wait for nested lifecycles to be ready.
+
+When using `lifecycle.Start()`, the lifecycle will block until all probes signal ready:
+
+```go
+lc, err := lifecycle.Start(context.Background(),
+    SetupHTTPListener,
+    SetupHTTPServer,
+    SetupHTTPReadinessProbe,
+)
+```
+
+The `Signal(err error)` method supports both success and failure cases:
+
+- `Signal(nil)` - Signals that the service is ready
+- `Signal(err)` - Signals that the service failed to become ready (the error will be returned by `Start()`)
+
+#### Nested Lifecycle
+
+Since `*lifecycle.Lifecycle` itself implements the `Service` interface, you can nest lifecycles to create modular subsystems:
+
+```go
+// Create a subsystem lifecycle for database-related services
+func SetupDatabaseSubsystem(parent *lifecycle.Lifecycle, conf *DatabaseConfig) (*DatabaseSubsystem, error) {
+    // Create a nested lifecycle
+    sub, err := lifecycle.Provide(
+        func() *DatabaseConfig { return conf },
+        func(lc *lifecycle.Lifecycle, conf *DatabaseConfig) *Database {
+            db := &Database{}
+            lc.Add(lifecycle.NewFuncActor(
+                func(_ context.Context) error { return db.Connect(conf.DatabaseURL) },
+                func(_ context.Context) error { return db.Close() },
+            ).WithName("database"))
+            return db
+        },
+        func(lc *lifecycle.Lifecycle, db *Database) *MigrationRunner {
+            runner := &MigrationRunner{db: db}
+            lc.Add(lifecycle.NewFuncActor(
+                func(_ context.Context) error { return runner.Run() },
+                nil,
+            ).WithName("migrations"))
+            return runner
+        },
+    )
+    if err != nil {
+        return nil, err
+    }
+
+    // Add the nested lifecycle as a service to the parent
+    parent.Add(sub.WithName("database-subsystem"))
+
+    return &DatabaseSubsystem{lifecycle: sub}, nil
+}
+
+// Main application
+func main() {
+    if err := lifecycle.Serve(context.Background(),
+        lifecycle.SetupSignal,
+        func() *Config { return loadConfig() },
+        func(conf *Config) *DatabaseConfig { return conf.DatabaseConfig },
+        SetupDatabaseSubsystem,  // Nested lifecycle
+        SetupHTTPServer,
+    ); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+Benefits of nested lifecycles:
+
+- **Modularity**: Group related services into self-contained subsystems
+- **Isolation**: Each subsystem has its own dependency injection scope
+- **Coordinated shutdown**: Parent lifecycle manages shutdown of all nested lifecycles
+
 ### Configuration
 
 #### Timeouts
@@ -255,18 +382,6 @@ logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 lc := lifecycle.New().WithLogger(logger)
 ```
 
-#### Signal Handling
-
-```go
-import "syscall"
-
-// Custom signals
-lc.Provide(lifecycle.SetupSignalWith(syscall.SIGUSR1, syscall.SIGUSR2))
-
-// Default signals (SIGINT, SIGTERM)
-lc.Provide(lifecycle.SetupSignal)
-```
-
 ### Error Handling and Monitoring
 
 The lifecycle system provides comprehensive monitoring:
@@ -286,6 +401,58 @@ func(ctx context.Context) error {
     }
     return cleanup()
 }
+```
+
+## Element - Multiple Values of Same Type
+
+The `Element[T]` type allows you to provide multiple values of the same type `T`. When resolving `Slice[T]`, all `*Element[T]` values are automatically collected. Use `NewElement()` to create elements conveniently.
+
+```go
+inj := inject.New()
+
+err := inj.Provide(
+    func() *Config { return &Config{Prefix: "api-"} },
+    // Multiple *Element[T] providers with dependencies
+    func(cfg *Config) *inject.Element[string] {
+        return inject.NewElement(cfg.Prefix + "route1")
+    },
+    func(cfg *Config) *inject.Element[string] {
+        return inject.NewElement(cfg.Prefix + "route2")
+    },
+)
+
+// Resolve as Slice[T] (which is []T)
+var routes inject.Slice[string]
+inj.Resolve(&routes) // routes = []string{"api-route1", "api-route2"}
+```
+
+**Note**: `*Element[T]` must be a pointer type. `Slice[T]` is a slice type alias (`type Slice[T any] []T`), so you can use it directly as a slice.
+
+### Nil Element Handling
+
+When resolving `Slice[T]`, the following behaviors apply:
+
+- **`nil *Element[T]`**: If a provider returns `nil` (i.e., `return nil` instead of `return NewElement(...)`), the nil element is **skipped** and not included in the resulting slice.
+- **`*Element[T]` with nil `Value`**: If a provider returns a valid `*Element[T]` but with a nil `Value` (e.g., `return NewElement[*Service](nil)`), the nil value **is included** in the resulting slice.
+
+```go
+// Example: nil *Element[T] is skipped
+inj.Provide(
+    func() *inject.Element[string] { return inject.NewElement("first") },
+    func() *inject.Element[string] { return nil },  // Skipped
+    func() *inject.Element[string] { return inject.NewElement("third") },
+)
+var strs inject.Slice[string]
+inj.Resolve(&strs) // strs = []string{"first", "third"}
+
+// Example: *Element[T] with nil Value is included
+inj.Provide(
+    func() *inject.Element[*Service] { return inject.NewElement(&Service{Name: "valid"}) },
+    func() *inject.Element[*Service] { return inject.NewElement[*Service](nil) },  // Included as nil
+    func() *inject.Element[*Service] { return inject.NewElement(&Service{Name: "another"}) },
+)
+var services inject.Slice[*Service]
+inj.Resolve(&services) // services = []*Service{&Service{...}, nil, &Service{...}}
 ```
 
 ## Important Notes

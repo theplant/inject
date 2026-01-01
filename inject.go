@@ -29,15 +29,19 @@ var (
 
 type ctxKeyDependencyPath struct{}
 
-type dependencyPath []reflect.Type
+type dependencyPath []typeKey
 
 func (dp dependencyPath) String() string {
 	if len(dp) == 0 {
 		return ""
 	}
 	var parts []string
-	for _, t := range dp {
-		parts = append(parts, t.String())
+	for _, k := range dp {
+		s := k.rt.String()
+		if k.index > 0 {
+			s += "[" + strconv.Itoa(k.index) + "]"
+		}
+		parts = append(parts, s)
 	}
 	return strings.Join(parts, " -> ")
 }
@@ -47,10 +51,10 @@ func getDependencyPath(ctx context.Context) dependencyPath {
 	return path
 }
 
-func appendDependencyToPath(ctx context.Context, typ reflect.Type) context.Context {
+func appendDependencyToPath(ctx context.Context, key typeKey) context.Context {
 	path := getDependencyPath(ctx)
 	newPath := append(dependencyPath{}, path...)
-	newPath = append(newPath, typ)
+	newPath = append(newPath, key)
 	return context.WithValue(ctx, ctxKeyDependencyPath{}, newPath)
 }
 
@@ -59,8 +63,27 @@ var (
 	typeContext = reflect.TypeOf((*context.Context)(nil)).Elem()
 )
 
+// IsTypeAllowed checks if a type is allowed as a function input or output parameter.
 func IsTypeAllowed(typ reflect.Type) bool {
 	return typ != typeContext && typ != typeError
+}
+
+// IsInputTypeAllowed checks if a type is allowed as a function input parameter.
+// Element[T] types are not allowed as input - use Slice[T] instead.
+func IsInputTypeAllowed(typ reflect.Type) bool {
+	if !IsTypeAllowed(typ) {
+		return false
+	}
+	return !isElementType(typ)
+}
+
+// IsOutputTypeAllowed checks if a type is allowed as a function output.
+// Slice[T] types are not allowed as output - use Element[T] instead.
+func IsOutputTypeAllowed(typ reflect.Type) bool {
+	if !IsTypeAllowed(typ) {
+		return false
+	}
+	return !isSliceType(typ)
 }
 
 type provider struct {
@@ -68,12 +91,23 @@ type provider struct {
 	ctor any // value func
 }
 
+// typeKey is used as a map key to support multiple providers for Element[T] types.
+// For normal types, index is always 0.
+// For Element[T] types, index increments for each provider.
+type typeKey struct {
+	rt    reflect.Type
+	index int
+}
+
 type Injector struct {
 	mu sync.RWMutex
 
-	values    map[reflect.Type]reflect.Value
-	providers map[reflect.Type]*provider
+	values    map[typeKey]reflect.Value
+	providers map[typeKey]*provider
 	parent    *Injector
+
+	// elementCounts tracks the count of providers for each Element[T] type
+	elementCounts map[reflect.Type]int
 
 	maxProviderSeq uint64
 	sfg            singleflight.Group
@@ -81,8 +115,9 @@ type Injector struct {
 
 func New() *Injector {
 	inj := &Injector{
-		values:         map[reflect.Type]reflect.Value{},
-		providers:      map[reflect.Type]*provider{},
+		values:         map[typeKey]reflect.Value{},
+		providers:      map[typeKey]*provider{},
+		elementCounts:  map[reflect.Type]int{},
 		maxProviderSeq: 0,
 	}
 	_ = inj.Provide(func() *Injector { return inj })
@@ -116,26 +151,44 @@ func (inj *Injector) unsafeProvide(ctor any) error {
 		return errors.Wrap(ErrInvalidProvider, "no valid output types")
 	}
 
-	provider := &provider{
+	p := &provider{
 		seq:  inj.maxProviderSeq,
 		ctor: ctor,
 	}
 	inj.maxProviderSeq++
 
+	// Collect all keys for cycle detection
+	var keysToCheck []typeKey
+
 	for _, outType := range outputTypes {
-		if _, ok := inj.values[outType]; ok {
+		// Check if this is *Element[T] type - allow multiple registrations with incrementing index
+		if isElementType(outType) {
+			idx := inj.elementCounts[outType]
+			key := typeKey{rt: outType, index: idx}
+			inj.providers[key] = p
+			inj.elementCounts[outType] = idx + 1
+			keysToCheck = append(keysToCheck, key)
+			continue
+		}
+
+		// Normal types: index is always 0
+		key := typeKey{rt: outType, index: 0}
+
+		if _, ok := inj.values[key]; ok {
 			return errors.Wrap(ErrTypeAlreadyProvided, outType.String())
 		}
 
-		if _, ok := inj.providers[outType]; ok {
+		if _, ok := inj.providers[key]; ok {
 			return errors.Wrap(ErrTypeAlreadyProvided, outType.String())
 		}
 
-		inj.providers[outType] = provider
+		inj.providers[key] = p
+		keysToCheck = append(keysToCheck, key)
 	}
 
-	for _, outType := range outputTypes {
-		if err := inj.unsafeDFSDetectCycle(outType); err != nil {
+	// Cycle detection for all types (including Element types)
+	for _, key := range keysToCheck {
+		if err := inj.unsafeDFSDetectCycle(key); err != nil {
 			return err
 		}
 	}
@@ -157,10 +210,10 @@ func (inj *Injector) invoke(ctx context.Context, f any) ([]reflect.Value, error)
 			in[i] = reflect.ValueOf(ctx)
 			continue
 		}
-		if !IsTypeAllowed(argType) {
-			return nil, errors.Wrap(ErrTypeNotAllowed, argType.String())
+		if !IsInputTypeAllowed(argType) {
+			return nil, errors.Wrapf(ErrTypeNotAllowed, "arg %d: %s", i, argType.String())
 		}
-		argValue, err := inj.resolve(ctx, argType)
+		argValue, err := inj.resolve(ctx, typeKey{rt: argType, index: 0})
 		if err != nil {
 			return nil, err
 		}
@@ -191,41 +244,63 @@ func (inj *Injector) invoke(ctx context.Context, f any) ([]reflect.Value, error)
 	return outs, nil
 }
 
-func (inj *Injector) resolve(ctx context.Context, rt reflect.Type) (reflect.Value, error) {
+func (inj *Injector) resolve(ctx context.Context, key typeKey) (reflect.Value, error) {
 	originalCtx := ctx
-	ctx = appendDependencyToPath(ctx, rt)
+	ctx = appendDependencyToPath(ctx, key)
+
+	// Check if this is a Slice[T] type that should be resolved from Element[T] providers
+	if isSliceType(key.rt) {
+		return inj.resolveSlice(ctx, key.rt, getSliceInnerType(key.rt))
+	}
 
 	inj.mu.RLock()
-	rv := inj.values[rt]
+	rv := inj.values[key]
 	if rv.IsValid() {
 		inj.mu.RUnlock()
 		return rv, nil
 	}
-	provider, ok := inj.providers[rt]
+	p, ok := inj.providers[key]
 	parent := inj.parent
 	inj.mu.RUnlock()
 
 	if ok {
 		// ensure that the provider is only executed once same time
-		_, err, _ := inj.sfg.Do(strconv.FormatUint(provider.seq, 10), func() (any, error) {
+		_, err, _ := inj.sfg.Do(strconv.FormatUint(p.seq, 10), func() (any, error) {
 			// must recheck the provider, because it may be deleted by prev inj.sfg.Do
 			inj.mu.RLock()
-			_, ok := inj.providers[rt]
+			_, ok := inj.providers[key]
 			inj.mu.RUnlock()
 			if !ok {
 				return nil, nil
 			}
 
-			results, err := inj.invoke(ctx, provider.ctor)
+			results, err := inj.invoke(ctx, p.ctor)
 			if err != nil {
 				return nil, err
 			}
 
+			// Find all keys that share this provider (for Element types that return multiple values)
 			inj.mu.Lock()
+			keysForProvider := make(map[reflect.Type][]typeKey)
+			for k, prov := range inj.providers {
+				if prov.seq == p.seq {
+					keysForProvider[k.rt] = append(keysForProvider[k.rt], k)
+				}
+			}
+
+			// Process results: assign each result to its corresponding key
+			typeCounts := make(map[reflect.Type]int)
 			for _, result := range results {
 				resultType := result.Type()
-				inj.values[resultType] = result
-				delete(inj.providers, resultType)
+				keys := keysForProvider[resultType]
+				idx := typeCounts[resultType]
+				if idx >= len(keys) {
+					inj.mu.Unlock()
+					return nil, errors.Errorf("provider seq %d returned more values of type %v than registered", p.seq, resultType)
+				}
+				inj.values[keys[idx]] = result
+				delete(inj.providers, keys[idx])
+				typeCounts[resultType]++
 			}
 			inj.mu.Unlock()
 
@@ -234,14 +309,75 @@ func (inj *Injector) resolve(ctx context.Context, rt reflect.Type) (reflect.Valu
 		if err != nil {
 			return rv, err
 		}
-		return inj.resolve(ctx, rt)
+		return inj.resolve(ctx, key)
 	}
 
 	if parent == nil {
 		return rv, errors.Wrapf(ErrTypeNotProvided, "dependency path: %s", getDependencyPath(ctx).String())
 	}
 
-	return parent.resolve(originalCtx, rt)
+	return parent.resolve(originalCtx, key)
+}
+
+// resolveSlice resolves a Slice[T] type by collecting all *Element[T] values
+func (inj *Injector) resolveSlice(ctx context.Context, sliceType reflect.Type, innerType reflect.Type) (reflect.Value, error) {
+	// sliceType is Slice[T] which is []T
+	// Create the result slice
+	result := reflect.MakeSlice(sliceType, 0, 0)
+
+	// Collect from parent first (if any)
+	if inj.parent != nil {
+		parentResult, err := inj.parent.resolveSlice(ctx, sliceType, innerType)
+		if err != nil && !errors.Is(err, ErrTypeNotProvided) {
+			return reflect.Value{}, err
+		}
+		if err == nil && parentResult.Len() > 0 {
+			result = reflect.AppendSlice(result, parentResult)
+		}
+	}
+
+	// Find *Element[T] type (all Element types are normalized to pointer)
+	var elementType reflect.Type
+	inj.mu.RLock()
+	for et := range inj.elementCounts {
+		if inner := getElementInnerType(et); inner != nil && inner == innerType {
+			elementType = et
+			break
+		}
+	}
+	count := 0
+	if elementType != nil {
+		count = inj.elementCounts[elementType]
+	}
+	inj.mu.RUnlock()
+
+	if count == 0 && result.Len() == 0 {
+		return reflect.Value{}, errors.Wrapf(ErrTypeNotProvided, "dependency path: %s", getDependencyPath(ctx).String())
+	}
+
+	// Resolve each *Element[T] by calling resolve directly
+	for i := 0; i < count; i++ {
+		key := typeKey{rt: elementType, index: i}
+
+		rv, err := inj.resolve(ctx, key)
+		if err != nil {
+			return reflect.Value{}, errors.Wrapf(err, "failed to resolve element %d for %s", i, elementType.String())
+		}
+
+		if rv.IsValid() {
+			// rv is *Element[T], dereference to get Value
+			if rv.IsNil() {
+				continue
+			}
+			elem := rv.Elem()
+			valueField := elem.FieldByName("Value")
+			if valueField.IsValid() && valueField.Type() == innerType {
+				result = reflect.Append(result, valueField)
+			}
+		}
+	}
+
+	return result, nil
 }
 
 func unwrapPtr(rv reflect.Value) reflect.Value {
@@ -274,11 +410,11 @@ func (inj *Injector) applyStruct(ctx context.Context, rv reflect.Value) error {
 	for i := 0; i < rv.NumField(); i++ {
 		structField := rt.Field(i)
 		if tag, ok := structField.Tag.Lookup(TagName); ok {
-			if !IsTypeAllowed(structField.Type) {
-				return errors.Wrap(ErrTypeNotAllowed, structField.Type.String())
+			if !IsInputTypeAllowed(structField.Type) {
+				return errors.Wrapf(ErrTypeNotAllowed, "field %d: %s", i, structField.Type.String())
 			}
 
-			dep, err := inj.resolve(ctx, structField.Type)
+			dep, err := inj.resolve(ctx, typeKey{rt: structField.Type, index: 0})
 			if err != nil {
 				if errors.Is(err, ErrTypeNotProvided) {
 					if strings.TrimSpace(tag) == TagValueOptional {
@@ -334,10 +470,12 @@ func (inj *Injector) Provide(ctors ...any) (xerr error) {
 	defer inj.mu.Unlock()
 
 	originalProviders := maps.Clone(inj.providers)
+	originalElementCounts := maps.Clone(inj.elementCounts)
 	originalMaxSeq := inj.maxProviderSeq
 	defer func() {
 		if xerr != nil {
 			inj.providers = originalProviders
+			inj.elementCounts = originalElementCounts
 			inj.maxProviderSeq = originalMaxSeq
 		}
 	}()
@@ -378,7 +516,7 @@ func (inj *Injector) ResolveContext(ctx context.Context, refs ...any) error {
 			return errors.Errorf("resolve requires pointer arguments, got %T", ref)
 		}
 
-		rv, err := inj.resolve(ctx, refType.Elem())
+		rv, err := inj.resolve(ctx, typeKey{rt: refType.Elem(), index: 0})
 		if err != nil {
 			return err
 		}
@@ -405,25 +543,21 @@ func (inj *Injector) BuildContext(ctx context.Context, ctors ...any) error {
 	}
 
 	inj.mu.RLock()
-	var typesToResolve []reflect.Type
-	typeToSeq := make(map[reflect.Type]uint64)
-	for typ, provider := range inj.providers {
-		typesToResolve = append(typesToResolve, typ)
-		typeToSeq[typ] = provider.seq
+	var keysToResolve []typeKey
+	keyToSeq := make(map[typeKey]uint64)
+	for key, p := range inj.providers {
+		keysToResolve = append(keysToResolve, key)
+		keyToSeq[key] = p.seq
 	}
 	inj.mu.RUnlock()
 
-	// Sort types by their provider sequence for stable order based on registration sequence
-	slices.SortFunc(typesToResolve, func(a, b reflect.Type) int {
-		return cmp.Compare(typeToSeq[a], typeToSeq[b])
+	// Sort keys by their provider sequence for stable order based on registration sequence
+	slices.SortFunc(keysToResolve, func(a, b typeKey) int {
+		return cmp.Compare(keyToSeq[a], keyToSeq[b])
 	})
 
-	for _, ty := range typesToResolve {
-		// Create a pointer to the type for resolution
-		ptr := reflect.New(ty)
-
-		// Resolve the type using the injector
-		if err := inj.ResolveContext(ctx, ptr.Interface()); err != nil {
+	for _, key := range keysToResolve {
+		if _, err := inj.resolve(ctx, key); err != nil {
 			return err
 		}
 	}
@@ -432,14 +566,16 @@ func (inj *Injector) BuildContext(ctx context.Context, ctors ...any) error {
 }
 
 // getValidOutputTypes extracts all valid output types from a constructor function type,
-// performing error type position validation and filtering out error types
+// performing error type position validation and filtering out error types.
+// For Element[T] types, duplicates are allowed (same type can appear multiple times).
+// For normal types, duplicates are deduplicated.
 func getValidOutputTypes(rt reflect.Type) ([]reflect.Type, error) {
 	if rt.Kind() != reflect.Func {
 		return nil, nil
 	}
 
 	var outputTypes []reflect.Type
-	seen := make(map[reflect.Type]bool) // Use map for deduplication
+	seen := make(map[reflect.Type]bool) // Use map for deduplication of normal types
 	numOut := rt.NumOut()
 
 	for i := 0; i < numOut; i++ {
@@ -454,11 +590,15 @@ func getValidOutputTypes(rt reflect.Type) ([]reflect.Type, error) {
 			continue
 		}
 
-		if !IsTypeAllowed(outType) {
-			return nil, errors.Wrap(ErrTypeNotAllowed, outType.String())
+		if !IsOutputTypeAllowed(outType) {
+			return nil, errors.Wrapf(ErrTypeNotAllowed, "out %d: %s", i, outType.String())
 		}
 
-		if !seen[outType] {
+		// Element types: allow duplicates (each gets its own index)
+		// Normal types: deduplicate
+		if isElementType(outType) {
+			outputTypes = append(outputTypes, outType)
+		} else if !seen[outType] {
 			outputTypes = append(outputTypes, outType)
 			seen[outType] = true
 		}
