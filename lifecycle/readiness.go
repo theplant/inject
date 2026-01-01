@@ -2,6 +2,13 @@ package lifecycle
 
 import "sync"
 
+// RequiresReadinessProbe is an interface for types that provide a readiness probe.
+// Actors implementing this interface will have their probes collected and
+// waited on during lifecycle startup.
+type RequiresReadinessProbe interface {
+	RequiresReadinessProbe() *ReadinessProbe
+}
+
 // ReadinessProbe is a simple readiness probe that can be used to signal when the application is ready to serve traffic.
 type ReadinessProbe struct {
 	once  sync.Once

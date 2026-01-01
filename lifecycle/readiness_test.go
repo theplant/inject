@@ -52,7 +52,7 @@ func SetupHTTPServer(lc *lifecycle.Lifecycle, listener net.Listener) (*http.Serv
 	return server, nil
 }
 
-func SetupReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) inject.Element[*lifecycle.ReadinessProbe] {
+func SetupReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) *inject.Element[*lifecycle.ReadinessProbe] {
 	probe := lifecycle.NewReadinessProbe()
 
 	addr := fmt.Sprintf("http://%s/health", listener.Addr().String())
@@ -73,7 +73,7 @@ func SetupReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) inject.
 	return inject.NewElement(probe)
 }
 
-func SetupFailingReadinessProbe(lc *lifecycle.Lifecycle) inject.Element[*lifecycle.ReadinessProbe] {
+func SetupFailingReadinessProbe(lc *lifecycle.Lifecycle) *inject.Element[*lifecycle.ReadinessProbe] {
 	probe := lifecycle.NewReadinessProbe()
 
 	// Add a dummy service to satisfy lifecycle requirements
@@ -185,7 +185,7 @@ func TestMultipleReadinessProbes(t *testing.T) {
 			SetupHTTPListener,
 			SetupHTTPServer,
 			// First probe - signals after 50ms
-			func(lc *lifecycle.Lifecycle) inject.Element[*lifecycle.ReadinessProbe] {
+			func(lc *lifecycle.Lifecycle) *inject.Element[*lifecycle.ReadinessProbe] {
 				probe := lifecycle.NewReadinessProbe()
 				lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
 					time.Sleep(50 * time.Millisecond)
@@ -196,7 +196,7 @@ func TestMultipleReadinessProbes(t *testing.T) {
 				return inject.NewElement(probe)
 			},
 			// Second probe - signals after 100ms
-			func(lc *lifecycle.Lifecycle) inject.Element[*lifecycle.ReadinessProbe] {
+			func(lc *lifecycle.Lifecycle) *inject.Element[*lifecycle.ReadinessProbe] {
 				probe := lifecycle.NewReadinessProbe()
 				lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
 					time.Sleep(100 * time.Millisecond)
@@ -233,7 +233,7 @@ func TestMultipleReadinessProbes(t *testing.T) {
 				return &dummyService{}
 			},
 			// First probe - succeeds
-			func(lc *lifecycle.Lifecycle) inject.Element[*lifecycle.ReadinessProbe] {
+			func(lc *lifecycle.Lifecycle) *inject.Element[*lifecycle.ReadinessProbe] {
 				probe := lifecycle.NewReadinessProbe()
 				lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
 					time.Sleep(20 * time.Millisecond)
@@ -243,7 +243,7 @@ func TestMultipleReadinessProbes(t *testing.T) {
 				return inject.NewElement(probe)
 			},
 			// Second probe - fails
-			func(lc *lifecycle.Lifecycle) inject.Element[*lifecycle.ReadinessProbe] {
+			func(lc *lifecycle.Lifecycle) *inject.Element[*lifecycle.ReadinessProbe] {
 				probe := lifecycle.NewReadinessProbe()
 				lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) error {
 					time.Sleep(50 * time.Millisecond)
@@ -255,6 +255,47 @@ func TestMultipleReadinessProbes(t *testing.T) {
 		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "probe2 failed")
+	})
+}
+
+func TestRequiresReadinessProbeInterface(t *testing.T) {
+	t.Run("Lifecycle implements RequiresReadinessProbe", func(t *testing.T) {
+		lc := lifecycle.New()
+		var _ lifecycle.RequiresReadinessProbe = lc
+		require.NotNil(t, lc.RequiresReadinessProbe())
+	})
+
+	t.Run("Nested lifecycle - parent waits for child", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		type subSystem struct {
+			*lifecycle.Lifecycle
+		}
+
+		startTime := time.Now()
+		lc, err := lifecycle.Start(ctx,
+			func(parent *lifecycle.Lifecycle) (*subSystem, error) {
+				sub, err := lifecycle.Provide(
+					SetupHTTPListener,
+					SetupHTTPServer,
+					SetupReadinessProbe,
+				)
+				if err != nil {
+					return nil, err
+				}
+				parent.Add(sub.WithName("subsystem"))
+				return &subSystem{sub}, nil
+			},
+		)
+		elapsed := time.Since(startTime)
+		require.NoError(t, err)
+		require.True(t, lc.IsStarted())
+
+		require.True(t, elapsed >= 100*time.Millisecond)
+		t.Logf("Start completed in %v", elapsed)
+
+		require.NoError(t, lc.Stop(context.Background()))
 	})
 }
 

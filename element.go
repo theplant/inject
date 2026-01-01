@@ -6,35 +6,37 @@ import (
 )
 
 // Element is a wrapper type that allows multiple values of the same type T
-// to be provided to the injector. When resolving Slice[T], all Element[T]
+// to be provided to the injector. When resolving Slice[T], all *Element[T]
 // values will be collected and returned.
 //
 // Usage:
 //
-//	inj.Provide(func() Element[http.Handler] { return Element[http.Handler]{Value: handler1} })
-//	inj.Provide(func() Element[http.Handler] { return Element[http.Handler]{Value: handler2} })
+//	inj.Provide(func() *Element[http.Handler] { return NewElement(handler1) })
+//	inj.Provide(func() *Element[http.Handler] { return NewElement(handler2) })
 //
 //	// Resolve as Slice[T]
 //	var handlers Slice[http.Handler]
-//	inj.Resolve(&handlers) // handlers.Values = []http.Handler{handler1, handler2}
+//	inj.Resolve(&handlers) // handlers = []http.Handler{handler1, handler2}
 type Element[T any] struct {
 	Value T
 }
 
-// NewElement creates a new Element[T] with the given value.
-func NewElement[T any](value T) Element[T] {
-	return Element[T]{Value: value}
+// NewElement creates a new *Element[T] with the given value.
+func NewElement[T any](value T) *Element[T] {
+	return &Element[T]{Value: value}
 }
 
-// Slice is a container type that collects all Element[T] values into a slice of T.
-// Use this type to resolve multiple Element[T] providers at once.
-type Slice[T any] struct {
-	Values []T
-}
+// Slice is a container type that collects all *Element[T] values into a slice of T.
+// Use Slice[T] to resolve multiple *Element[T] providers at once.
+type Slice[T any] []T
 
-// isElementType checks if the type is an Element[T] type.
-// Uses type name prefix check for reliability.
+// isElementType checks if the type is *Element[T] type.
+// Only pointer type is supported.
 func isElementType(t reflect.Type) bool {
+	if t.Kind() != reflect.Ptr {
+		return false
+	}
+	t = t.Elem()
 	if t.Kind() != reflect.Struct {
 		return false
 	}
@@ -42,13 +44,15 @@ func isElementType(t reflect.Type) bool {
 	return strings.HasPrefix(t.Name(), "Element[") && t.PkgPath() == "github.com/theplant/inject"
 }
 
-// getElementInnerType extracts T from Element[T].
+// getElementInnerType extracts T from *Element[T].
 // Returns nil if not an Element type.
 func getElementInnerType(t reflect.Type) reflect.Type {
 	if !isElementType(t) {
 		return nil
 	}
-	field, ok := t.FieldByName("Value")
+	// t is *Element[T], get Element[T]
+	elemType := t.Elem()
+	field, ok := elemType.FieldByName("Value")
 	if !ok {
 		panic("Element[T] must have a Value field")
 	}
@@ -56,8 +60,9 @@ func getElementInnerType(t reflect.Type) reflect.Type {
 }
 
 // isSliceType checks if the type is Slice[T].
+// Slice[T] is a slice type alias, so it has Kind() == reflect.Slice.
 func isSliceType(t reflect.Type) bool {
-	if t.Kind() != reflect.Struct {
+	if t.Kind() != reflect.Slice {
 		return false
 	}
 	return strings.HasPrefix(t.Name(), "Slice[") && t.PkgPath() == "github.com/theplant/inject"
@@ -69,10 +74,6 @@ func getSliceInnerType(t reflect.Type) reflect.Type {
 	if !isSliceType(t) {
 		return nil
 	}
-	// Get the element type from Values field
-	valuesField, ok := t.FieldByName("Values")
-	if !ok || valuesField.Type.Kind() != reflect.Slice {
-		panic("Slice[T] must have a Values field")
-	}
-	return valuesField.Type.Elem()
+	// Slice[T] is []T, so Elem() returns T
+	return t.Elem()
 }

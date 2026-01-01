@@ -161,7 +161,7 @@ func (inj *Injector) unsafeProvide(ctor any) error {
 	var keysToCheck []typeKey
 
 	for _, outType := range outputTypes {
-		// Check if this is an Element[T] type - allow multiple registrations with incrementing index
+		// Check if this is *Element[T] type - allow multiple registrations with incrementing index
 		if isElementType(outType) {
 			idx := inj.elementCounts[outType]
 			key := typeKey{rt: outType, index: idx}
@@ -318,11 +318,11 @@ func (inj *Injector) resolve(ctx context.Context, key typeKey) (reflect.Value, e
 	return parent.resolve(originalCtx, key)
 }
 
-// resolveSlice resolves a Slice[T] type by collecting all Element[T] values
+// resolveSlice resolves a Slice[T] type by collecting all *Element[T] values
 func (inj *Injector) resolveSlice(ctx context.Context, sliceType reflect.Type, innerType reflect.Type) (reflect.Value, error) {
-	// Create the result slice for Values field
-	valuesSliceType := reflect.SliceOf(innerType)
-	valuesSlice := reflect.MakeSlice(valuesSliceType, 0, 0)
+	// sliceType is Slice[T] which is []T
+	// Create the result slice
+	result := reflect.MakeSlice(sliceType, 0, 0)
 
 	// Collect from parent first (if any)
 	if inj.parent != nil {
@@ -330,15 +330,12 @@ func (inj *Injector) resolveSlice(ctx context.Context, sliceType reflect.Type, i
 		if err != nil && !errors.Is(err, ErrTypeNotProvided) {
 			return reflect.Value{}, err
 		}
-		if err == nil {
-			parentValues := parentResult.FieldByName("Values")
-			if parentValues.IsValid() && parentValues.Len() > 0 {
-				valuesSlice = reflect.AppendSlice(valuesSlice, parentValues)
-			}
+		if err == nil && parentResult.Len() > 0 {
+			result = reflect.AppendSlice(result, parentResult)
 		}
 	}
 
-	// Find the Element[T] type by scanning elementCounts
+	// Find *Element[T] type (all Element types are normalized to pointer)
 	var elementType reflect.Type
 	inj.mu.RLock()
 	for et := range inj.elementCounts {
@@ -353,11 +350,11 @@ func (inj *Injector) resolveSlice(ctx context.Context, sliceType reflect.Type, i
 	}
 	inj.mu.RUnlock()
 
-	if count == 0 && valuesSlice.Len() == 0 {
+	if count == 0 && result.Len() == 0 {
 		return reflect.Value{}, errors.Wrapf(ErrTypeNotProvided, "dependency path: %s", getDependencyPath(ctx).String())
 	}
 
-	// Resolve each Element[T] by calling resolve directly
+	// Resolve each *Element[T] by calling resolve directly
 	for i := 0; i < count; i++ {
 		key := typeKey{rt: elementType, index: i}
 
@@ -367,16 +364,17 @@ func (inj *Injector) resolveSlice(ctx context.Context, sliceType reflect.Type, i
 		}
 
 		if rv.IsValid() {
-			valueField := rv.FieldByName("Value")
+			// rv is *Element[T], dereference to get Value
+			if rv.IsNil() {
+				continue
+			}
+			elem := rv.Elem()
+			valueField := elem.FieldByName("Value")
 			if valueField.IsValid() && valueField.Type() == innerType {
-				valuesSlice = reflect.Append(valuesSlice, valueField)
+				result = reflect.Append(result, valueField)
 			}
 		}
 	}
-
-	// Create the Slice struct and set Values field
-	result := reflect.New(sliceType).Elem()
-	result.FieldByName("Values").Set(valuesSlice)
 
 	return result, nil
 }

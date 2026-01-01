@@ -247,31 +247,44 @@ lc.Provide(lifecycle.SetupSignal)
 
 #### Readiness Probe
 
-The lifecycle supports optional readiness probes to block startup until services are ready. Use `inject.Element[*ReadinessProbe]` to provide one or more probes:
+The lifecycle supports optional readiness probes to block startup until services are ready. There are two ways to provide probes:
+
+**1. Using `*inject.Element[*ReadinessProbe]` pattern:**
 
 ```go
-func SetupHTTPReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) inject.Element[*lifecycle.ReadinessProbe] {
+func SetupHTTPReadinessProbe(lc *lifecycle.Lifecycle, listener net.Listener) *inject.Element[*lifecycle.ReadinessProbe] {
     probe := lifecycle.NewReadinessProbe()
 
     lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) (xerr error) {
-        defer func() {  probe.Signal(xerr) }()
+        defer func() { probe.Signal(xerr) }()
         return WaitForReady(ctx, fmt.Sprintf("http://%s/health", listener.Addr().String()))
     }, nil).WithName("http-readiness"))
 
-    return inject.Element[*lifecycle.ReadinessProbe]{Value: probe}
-}
-
-func SetupDatabaseProbe(lc *lifecycle.Lifecycle, db *Database) inject.Element[*lifecycle.ReadinessProbe] {
-    probe := lifecycle.NewReadinessProbe()
-
-    lc.Add(lifecycle.NewFuncActor(func(ctx context.Context) (xerr error) {
-        defer func() {  probe.Signal(xerr) }()
-        return db.Ping(ctx)
-    }, nil).WithName("db-readiness"))
-
-    return inject.Element[*lifecycle.ReadinessProbe]{Value: probe}
+    return inject.NewElement(probe)
 }
 ```
+
+**2. Implementing `RequiresReadinessProbe` interface on actors:**
+
+```go
+// Example: Custom actor with readiness probe
+type HTTPServer struct {
+    probe *lifecycle.ReadinessProbe
+    // ...
+}
+
+func (s *HTTPServer) RequiresReadinessProbe() *lifecycle.ReadinessProbe {
+    return s.probe
+}
+
+func (s *HTTPServer) Start(ctx context.Context) error {
+    // Signal ready when server is listening
+    defer func() { s.probe.Signal(nil) }()
+    return s.server.ListenAndServe()
+}
+```
+
+**Note:** `*lifecycle.Lifecycle` itself implements `RequiresReadinessProbe`. When a nested lifecycle completes its `Start()`, it automatically signals its readiness probe. This allows parent lifecycles to wait for nested lifecycles to be ready.
 
 When using `lifecycle.Start()`, the lifecycle will block until all probes signal ready:
 
@@ -280,7 +293,6 @@ lc, err := lifecycle.Start(context.Background(),
     SetupHTTPListener,
     SetupHTTPServer,
     SetupHTTPReadinessProbe,
-    SetupDatabaseProbe,
 )
 ```
 
@@ -295,12 +307,9 @@ Since `*lifecycle.Lifecycle` itself implements the `Service` interface, you can 
 
 ```go
 // Create a subsystem lifecycle for database-related services
-func SetupDatabaseSubsystem(parent *lifecycle.Lifecycle, conf *DatabaseConfig) *DatabaseSubsystem {
+func SetupDatabaseSubsystem(parent *lifecycle.Lifecycle, conf *DatabaseConfig) (*DatabaseSubsystem, error) {
     // Create a nested lifecycle
-    sub := lifecycle.New()
-
-    // Provide dependencies to the nested lifecycle
-    sub.Provide(
+    sub, err := lifecycle.Provide(
         func() *DatabaseConfig { return conf },
         func(lc *lifecycle.Lifecycle, conf *DatabaseConfig) *Database {
             db := &Database{}
@@ -319,11 +328,14 @@ func SetupDatabaseSubsystem(parent *lifecycle.Lifecycle, conf *DatabaseConfig) *
             return runner
         },
     )
+    if err != nil {
+        return nil, err
+    }
 
     // Add the nested lifecycle as a service to the parent
     parent.Add(sub.WithName("database-subsystem"))
 
-    return &DatabaseSubsystem{lifecycle: sub}
+    return &DatabaseSubsystem{lifecycle: sub}, nil
 }
 
 // Main application
@@ -393,26 +405,28 @@ func(ctx context.Context) error {
 
 ## Element - Multiple Values of Same Type
 
-The `Element[T]` type allows you to provide multiple values of the same type `T`. When resolving `Slice[T]`, all `Element[T]` values are automatically collected. Element providers can have dependencies like regular providers.
+The `Element[T]` type allows you to provide multiple values of the same type `T`. When resolving `Slice[T]`, all `*Element[T]` values are automatically collected. Use `NewElement()` to create elements conveniently.
 
 ```go
 inj := inject.New()
 
 err := inj.Provide(
     func() *Config { return &Config{Prefix: "api-"} },
-    // Multiple Element[T] providers with dependencies
-    func(cfg *Config) inject.Element[string] {
-        return inject.Element[string]{Value: cfg.Prefix + "route1"}
+    // Multiple *Element[T] providers with dependencies
+    func(cfg *Config) *inject.Element[string] {
+        return inject.NewElement(cfg.Prefix + "route1")
     },
-    func(cfg *Config) inject.Element[string] {
-        return inject.Element[string]{Value: cfg.Prefix + "route2"}
+    func(cfg *Config) *inject.Element[string] {
+        return inject.NewElement(cfg.Prefix + "route2")
     },
 )
 
-// Resolve as Slice[T]
+// Resolve as Slice[T] (which is []T)
 var routes inject.Slice[string]
-inj.Resolve(&routes) // routes.Values = []string{"api-route1", "api-route2"}
+inj.Resolve(&routes) // routes = []string{"api-route1", "api-route2"}
 ```
+
+**Note**: `*Element[T]` must be a pointer type. `Slice[T]` is a slice type alias (`type Slice[T any] []T`), so you can use it directly as a slice.
 
 ## Important Notes
 
