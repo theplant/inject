@@ -2,6 +2,12 @@ package inject
 
 import "context"
 
+// Resolver is an interface for resolving dependencies from an injector.
+type Resolver interface {
+	Resolve(...any) error
+	ResolveContext(context.Context, ...any) error
+}
+
 // Resolve resolves a dependency from the injector.
 func Resolve[T any](inj interface{ Resolve(...any) error }) (T, error) {
 	var t T

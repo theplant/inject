@@ -455,6 +455,50 @@ var services inject.Slice[*Service]
 inj.Resolve(&services) // services = []*Service{&Service{...}, nil, &Service{...}}
 ```
 
+## Void Constructors
+
+The `Void` type allows you to register constructors that don't return any value (or only return `error`). These are useful for "side-effect only" operations like modifying configuration or performing initialization tasks.
+
+When a constructor has no return type (or only returns `error`), it is automatically treated as returning `*Element[*Void]`.
+
+```go
+inj := inject.New()
+
+// Provide a config
+err := inj.Provide(func() *Config {
+    return &Config{Debug: false}
+})
+
+// Void constructor - modifies config as side effect
+err = inj.Provide(func(cfg *Config) {
+    cfg.Debug = true  // Modify config
+})
+
+// Execute all constructors via Build
+err = inj.Build()
+
+// Or resolve explicitly to trigger void constructors
+var voids inject.Slice[*Void]
+inj.Resolve(&voids)
+```
+
+**Key behaviors:**
+
+- **Lazy execution**: Void constructors are not executed until `Build()` is called or `Slice[*Void]` is resolved
+- **Single execution**: Each void constructor is executed only once (like all other constructors)
+- **Dependency injection**: Void constructors can have dependencies injected as parameters
+- **Error handling**: Void constructors can return `error` as their only return type
+
+```go
+// Void constructor with error handling
+inj.Provide(func(cfg *Config) error {
+    if cfg.DatabaseURL == "" {
+        return errors.New("database URL is required")
+    }
+    return nil
+})
+```
+
 ## Important Notes
 
 ### Special Parameter Types
