@@ -105,11 +105,11 @@ func WaitForReady(ctx context.Context, endpoint string) error {
 		case <-ticker.C:
 			resp, err := client.Get(endpoint)
 			if resp != nil {
-				if err == nil && resp.StatusCode == http.StatusOK {
-					resp.Body.Close()
+				success := err == nil && resp.StatusCode == http.StatusOK
+				resp.Body.Close()
+				if success {
 					return nil
 				}
-				resp.Body.Close()
 			}
 		}
 	}
