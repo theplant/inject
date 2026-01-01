@@ -571,7 +571,7 @@ func (inj *Injector) BuildContext(ctx context.Context, ctors ...any) error {
 // performing error type position validation and filtering out error types.
 // For Element[T] types, duplicates are allowed (same type can appear multiple times).
 // For normal types, duplicates are deduplicated.
-// If the function has no return values (or only returns error), it returns *Element[*Nop].
+// If the function has no return values (or only returns error), it returns *Element[*Void].
 func getValidOutputTypes(rt reflect.Type) ([]reflect.Type, error) {
 	if rt.Kind() != reflect.Func {
 		return nil, nil
