@@ -295,7 +295,8 @@ func (inj *Injector) resolve(ctx context.Context, key typeKey) (reflect.Value, e
 				keys := keysForProvider[resultType]
 				idx := typeCounts[resultType]
 				if idx >= len(keys) {
-					panic("unexpected: result type not found in provider keys")
+					inj.mu.Unlock()
+					return nil, errors.Errorf("provider seq %d returned more values of type %v than registered", p.seq, resultType)
 				}
 				inj.values[keys[idx]] = result
 				delete(inj.providers, keys[idx])

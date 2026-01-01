@@ -127,8 +127,8 @@ func (inj *Injector) unsafeGetDirectDependencies(targetKey typeKey) ([]directDep
 			if inType == typeContext {
 				continue
 			}
-			if !IsTypeAllowed(inType) {
-				return nil, errors.Wrap(ErrTypeNotAllowed, inType.String())
+			if !IsInputTypeAllowed(inType) {
+				return nil, errors.Wrapf(ErrTypeNotAllowed, "input type %s is not allowed", inType.String())
 			}
 
 			// For Slice[T] dependencies, add all Element[T] providers as dependencies
@@ -194,8 +194,8 @@ func getStructFieldDependencies(t reflect.Type) ([]reflect.Type, error) {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		if _, ok := field.Tag.Lookup(TagName); ok {
-			if !IsTypeAllowed(field.Type) {
-				return nil, errors.Wrap(ErrTypeNotAllowed, field.Type.String())
+			if !IsInputTypeAllowed(field.Type) {
+				return nil, errors.Wrapf(ErrTypeNotAllowed, "field type %s is not allowed", field.Type.String())
 			}
 			if !seen[field.Type] {
 				deps = append(deps, field.Type)

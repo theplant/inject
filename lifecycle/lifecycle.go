@@ -103,7 +103,7 @@ func New() *Lifecycle {
 	return lc
 }
 
-// ReadinessProbe returns the readiness probe for this lifecycle.
+// RequiresReadinessProbe returns the readiness probe for this lifecycle.
 // The probe is signaled when Start completes successfully.
 // This allows parent lifecycles to wait for nested lifecycles to be ready.
 func (lc *Lifecycle) RequiresReadinessProbe() *ReadinessProbe {
@@ -180,9 +180,9 @@ func (lc *Lifecycle) Start(ctx context.Context) (xerr error) {
 		select {
 		case <-ctx.Done():
 			return errors.WithStack(ctx.Err())
-		case <-probe.doneC:
-			if probe.err != nil {
-				return errors.WithStack(probe.err)
+		case <-probe.Done():
+			if err := probe.Error(); err != nil {
+				return err
 			}
 		}
 	}

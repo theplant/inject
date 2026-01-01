@@ -54,7 +54,8 @@ func getElementInnerType(t reflect.Type) reflect.Type {
 	elemType := t.Elem()
 	field, ok := elemType.FieldByName("Value")
 	if !ok {
-		panic("Element[T] must have a Value field")
+		// If the Value field is missing, treat this as an invalid Element[T] type.
+		return nil
 	}
 	return field.Type
 }

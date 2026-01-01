@@ -428,6 +428,33 @@ inj.Resolve(&routes) // routes = []string{"api-route1", "api-route2"}
 
 **Note**: `*Element[T]` must be a pointer type. `Slice[T]` is a slice type alias (`type Slice[T any] []T`), so you can use it directly as a slice.
 
+### Nil Element Handling
+
+When resolving `Slice[T]`, the following behaviors apply:
+
+- **`nil *Element[T]`**: If a provider returns `nil` (i.e., `return nil` instead of `return NewElement(...)`), the nil element is **skipped** and not included in the resulting slice.
+- **`*Element[T]` with nil `Value`**: If a provider returns a valid `*Element[T]` but with a nil `Value` (e.g., `return NewElement[*Service](nil)`), the nil value **is included** in the resulting slice.
+
+```go
+// Example: nil *Element[T] is skipped
+inj.Provide(
+    func() *inject.Element[string] { return inject.NewElement("first") },
+    func() *inject.Element[string] { return nil },  // Skipped
+    func() *inject.Element[string] { return inject.NewElement("third") },
+)
+var strs inject.Slice[string]
+inj.Resolve(&strs) // strs = []string{"first", "third"}
+
+// Example: *Element[T] with nil Value is included
+inj.Provide(
+    func() *inject.Element[*Service] { return inject.NewElement(&Service{Name: "valid"}) },
+    func() *inject.Element[*Service] { return inject.NewElement[*Service](nil) },  // Included as nil
+    func() *inject.Element[*Service] { return inject.NewElement(&Service{Name: "another"}) },
+)
+var services inject.Slice[*Service]
+inj.Resolve(&services) // services = []*Service{&Service{...}, nil, &Service{...}}
+```
+
 ## Important Notes
 
 ### Special Parameter Types

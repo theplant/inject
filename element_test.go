@@ -479,16 +479,12 @@ func TestCannotDependOnElementTypeDirectly(t *testing.T) {
 	inj := New()
 
 	// Cannot depend on *Element[T] directly, should use Slice[T] instead
+	// Error occurs at Provide time during cycle detection
 	err := inj.Provide(
 		func(e *Element[string]) int {
 			return len(e.Value)
 		},
 	)
-	require.NoError(t, err) // Provide succeeds
-
-	// Error should occur at resolve/invoke time
-	var i int
-	err = inj.Resolve(&i)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrTypeNotAllowed)
 	t.Log(err)
@@ -583,4 +579,119 @@ func TestElementPointerWithError(t *testing.T) {
 	err = inj.Resolve(&ints)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "failed to create element")
+}
+
+func TestElementNilPointer(t *testing.T) {
+	t.Run("nil *Element[T] is skipped", func(t *testing.T) {
+		inj := New()
+
+		// Provide a nil *Element[string] along with valid ones
+		err := inj.Provide(
+			func() *Element[string] { return NewElement("first") },
+			func() *Element[string] { return nil }, // Returns nil *Element[string]
+			func() *Element[string] { return NewElement("third") },
+		)
+		require.NoError(t, err)
+
+		// Resolve should succeed with only non-nil elements
+		var strs Slice[string]
+		err = inj.Resolve(&strs)
+		require.NoError(t, err)
+		require.Len(t, strs[:], 2)
+		require.Contains(t, strs[:], "first")
+		require.Contains(t, strs[:], "third")
+	})
+
+	t.Run("all nil *Element[T] results in empty slice from parent", func(t *testing.T) {
+		parent := New()
+		child := New()
+		err := child.SetParent(parent)
+		require.NoError(t, err)
+
+		// Parent provides valid element
+		err = parent.Provide(
+			func() *Element[string] { return NewElement("from-parent") },
+		)
+		require.NoError(t, err)
+
+		// Child provides only nil elements
+		err = child.Provide(
+			func() *Element[string] { return nil },
+			func() *Element[string] { return nil },
+		)
+		require.NoError(t, err)
+
+		// Resolve from child should only get parent's element
+		var strs Slice[string]
+		err = child.Resolve(&strs)
+		require.NoError(t, err)
+		require.Len(t, strs[:], 1)
+		require.Contains(t, strs[:], "from-parent")
+	})
+}
+
+func TestElementWithNilValue(t *testing.T) {
+	t.Run("*Element[T] with nil pointer Value is included", func(t *testing.T) {
+		inj := New()
+
+		type Service struct {
+			Name string
+		}
+
+		// Provide *Element[*Service] where Value is nil
+		err := inj.Provide(
+			func() *Element[*Service] { return NewElement(&Service{Name: "valid"}) },
+			func() *Element[*Service] { return NewElement[*Service](nil) }, // Value is nil
+			func() *Element[*Service] { return NewElement(&Service{Name: "another"}) },
+		)
+		require.NoError(t, err)
+
+		// Resolve should include all elements, including the one with nil Value
+		var services Slice[*Service]
+		err = inj.Resolve(&services)
+		require.NoError(t, err)
+		require.Len(t, services[:], 3)
+
+		// Count non-nil and nil values
+		var nilCount, nonNilCount int
+		for _, s := range services[:] {
+			if s == nil {
+				nilCount++
+			} else {
+				nonNilCount++
+			}
+		}
+		require.Equal(t, 1, nilCount, "should have 1 nil value")
+		require.Equal(t, 2, nonNilCount, "should have 2 non-nil values")
+	})
+
+	t.Run("*Element[T] with nil interface Value is included", func(t *testing.T) {
+		inj := New()
+
+		// Provide *Element[testHandler] where Value is nil interface
+		err := inj.Provide(
+			func() *Element[testHandler] { return NewElement[testHandler](testHandlerA{}) },
+			func() *Element[testHandler] { return NewElement[testHandler](nil) }, // nil interface
+			func() *Element[testHandler] { return NewElement[testHandler](testHandlerB{}) },
+		)
+		require.NoError(t, err)
+
+		// Resolve should include all elements
+		var handlers Slice[testHandler]
+		err = inj.Resolve(&handlers)
+		require.NoError(t, err)
+		require.Len(t, handlers[:], 3)
+
+		// Count non-nil and nil values
+		var nilCount, nonNilCount int
+		for _, h := range handlers[:] {
+			if h == nil {
+				nilCount++
+			} else {
+				nonNilCount++
+			}
+		}
+		require.Equal(t, 1, nilCount, "should have 1 nil interface value")
+		require.Equal(t, 2, nonNilCount, "should have 2 non-nil interface values")
+	})
 }
