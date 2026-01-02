@@ -639,7 +639,8 @@ func TestStartDoesNotHangWhenServeFailsDuringProbeWait(t *testing.T) {
 		return expectedErr
 	}, nil))
 
-	// FuncActor with WithReadiness (Start succeeds immediately, probe signals after Start)
+	// FuncActor configured with WithReadiness. In this test, its Start() is never called because
+	// the first actor's Serve() fails first, so this actor's readiness probe never signals.
 	lc.Add(NewFuncActor(nil, nil).WithReadiness())
 
 	// Simple FuncService
