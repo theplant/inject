@@ -343,6 +343,8 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 			actorType = "Service"
 		}
 
+		logger.DebugContext(ctx, fmt.Sprintf("%s starting", actorType), "actor", actorName)
+
 		if err := actor.Start(ctx); err != nil {
 			logger.ErrorContext(ctx, fmt.Sprintf("Failed to start %s", strings.ToLower(actorType)), "actor", actorName, "error", err)
 			return err
