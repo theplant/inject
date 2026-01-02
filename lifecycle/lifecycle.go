@@ -142,6 +142,7 @@ func (lc *Lifecycle) Start(ctx context.Context) (xerr error) {
 
 	lc.mu.RLock()
 	actors := slices.Clone(lc.actors)
+	logger := lc.logger
 	lc.mu.RUnlock()
 
 	// Check for long-running services before starting actors
@@ -177,7 +178,12 @@ func (lc *Lifecycle) Start(ctx context.Context) (xerr error) {
 	}
 
 	// Wait for all probes to signal ready
-	for _, probe := range allProbes {
+	for i, probe := range allProbes {
+		probeName := probe.GetName()
+		if probeName == "" {
+			probeName = fmt.Sprintf("probe[%d]", i)
+		}
+		logger.DebugContext(ctx, "Waiting for readiness probe", "probe", probeName)
 		select {
 		case <-lc.Done():
 			return lc.Err()
@@ -185,8 +191,10 @@ func (lc *Lifecycle) Start(ctx context.Context) (xerr error) {
 			return errors.WithStack(ctx.Err())
 		case <-probe.Done():
 			if err := probe.Error(); err != nil {
+				logger.ErrorContext(ctx, "Readiness probe failed", "probe", probeName, "error", err)
 				return err
 			}
+			logger.DebugContext(ctx, "Readiness probe signaled ready", "probe", probeName)
 		}
 	}
 
@@ -194,8 +202,10 @@ func (lc *Lifecycle) Start(ctx context.Context) (xerr error) {
 }
 
 // WithName sets the name for the lifecycle.
+// Also updates the readiness probe name.
 func (lc *Lifecycle) WithName(name string) *Lifecycle {
 	lc.FuncService.WithName(name)
+	lc.readinessProbe.WithName(name)
 	return lc
 }
 

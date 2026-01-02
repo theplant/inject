@@ -15,6 +15,7 @@ type ReadinessProbe struct {
 	doneC chan struct{} // Completion signal channel
 	mu    sync.RWMutex  // Protects err field
 	err   error         // Error if failed, nil if successful
+	name  string        // Name for logging and debugging
 }
 
 // NewReadinessProbe creates a new readiness probe.
@@ -45,4 +46,15 @@ func (rp *ReadinessProbe) Error() error {
 	rp.mu.RLock()
 	defer rp.mu.RUnlock()
 	return rp.err
+}
+
+// WithName sets the name of the readiness probe for logging and debugging.
+func (rp *ReadinessProbe) WithName(name string) *ReadinessProbe {
+	rp.name = name
+	return rp
+}
+
+// GetName returns the name of the readiness probe.
+func (rp *ReadinessProbe) GetName() string {
+	return rp.name
 }

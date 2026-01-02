@@ -31,8 +31,12 @@ func NewFuncActor(start, stop func(ctx context.Context) error) *FuncActor {
 }
 
 // WithName sets the name of the actor.
+// If a readiness probe is enabled, its name is also updated.
 func (f *FuncActor) WithName(name string) *FuncActor {
 	f.name = name
+	if f.readinessProbe != nil {
+		f.readinessProbe.WithName(name)
+	}
 	return f
 }
 
@@ -73,7 +77,7 @@ func (f *FuncActor) RequiresStop() bool {
 // Returns the actor for method chaining.
 func (f *FuncActor) WithReadiness() *FuncActor {
 	if f.readinessProbe == nil {
-		f.readinessProbe = NewReadinessProbe()
+		f.readinessProbe = NewReadinessProbe().WithName(f.name)
 	}
 	return f
 }
