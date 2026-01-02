@@ -179,6 +179,8 @@ func (lc *Lifecycle) Start(ctx context.Context) (xerr error) {
 	// Wait for all probes to signal ready
 	for _, probe := range allProbes {
 		select {
+		case <-lc.Done():
+			return lc.Err()
 		case <-ctx.Done():
 			return errors.WithStack(ctx.Err())
 		case <-probe.Done():
