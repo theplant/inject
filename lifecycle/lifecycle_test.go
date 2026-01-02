@@ -625,7 +625,39 @@ func TestWithStopPanicBehavior(t *testing.T) {
 	}, "WithStop should panic when called on Lifecycle")
 }
 
-// TestRequiresStopCleanupScenarios tests various scenarios where RequiresStop actors need cleanup
+// TestStartDoesNotHangWhenServeFailsDuringProbeWait validates that Start() returns immediately
+// when Serve() fails in the background while Start() is waiting for readiness probes.
+func TestStartDoesNotHangWhenServeFailsDuringProbeWait(t *testing.T) {
+	expectedErr := errors.New("actor failed")
+
+	lc := New()
+	defer func() { _ = lc.Stop(context.Background()) }()
+
+	// FuncActor that fails after delay - Serve will fail while Start waits for probe
+	lc.Add(NewFuncActor(func(ctx context.Context) error {
+		time.Sleep(50 * time.Millisecond)
+		return expectedErr
+	}, nil))
+
+	// FuncActor configured with WithReadiness. In this test, its Start() is never called because
+	// the first actor's Serve() fails first, so this actor's readiness probe never signals.
+	lc.Add(NewFuncActor(nil, nil).WithReadiness())
+
+	// Simple FuncService
+	lc.Add(NewFuncService(func(ctx context.Context) error {
+		<-ctx.Done()
+		return nil
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := lc.Start(ctx)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, context.DeadlineExceeded)
+	require.Contains(t, err.Error(), "actor failed")
+}
+
 func TestRequiresStopCleanupScenarios(t *testing.T) {
 	t.Run("BuildContext failure should clean up RequiresStop actors", func(t *testing.T) {
 		var alwaysActiveStopped, normalStopped int32
