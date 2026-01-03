@@ -838,7 +838,8 @@ func TestStageOrdering(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = lc.Start(ctx)
+	err := lc.Start(ctx)
+	require.NoError(t, err)
 
 	// Wait for lifecycle to complete
 	<-lc.Done()
