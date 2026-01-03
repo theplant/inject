@@ -307,10 +307,9 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 		return errors.WithStack(ErrServed)
 	}
 
-	// Track which actors have been started using pointer address as key.
-	// Using fmt.Sprintf("%p") to handle any Actor implementation safely,
-	// including value types with non-comparable fields.
-	startedActors := make(map[string]bool)
+	// Track which actors have been started using actor identity.
+	// This works reliably for pointer types and most value types.
+	startedActors := make(map[Actor]bool)
 
 	defer func() {
 		lc.mu.RLock()
@@ -331,7 +330,7 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 			if rs, ok := actor.(RequiresStop); ok && rs.RequiresStop() {
 				needsStop = true
 			}
-			if !needsStop && startedActors[fmt.Sprintf("%p", actor)] {
+			if !needsStop && startedActors[actor] {
 				needsStop = true
 			}
 
@@ -386,7 +385,7 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 			return err
 		}
 
-		startedActors[fmt.Sprintf("%p", actor)] = true
+		startedActors[actor] = true
 		logger.DebugContext(ctx, fmt.Sprintf("%s started successfully", actorType), "actor", actorName)
 	}
 
