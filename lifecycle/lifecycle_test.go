@@ -808,3 +808,41 @@ func TestRequiresStopCleanupScenarios(t *testing.T) {
 		require.False(t, startOnlyActor.RequiresStop(), "Actor with only start should not require stop")
 	})
 }
+
+func TestStageOrdering(t *testing.T) {
+	var order []string
+
+	lc := New()
+
+	// Provide actors in reverse stage order to verify sorting works
+	lc.Add(NewFuncActor(func(_ context.Context) error {
+		order = append(order, "stage10")
+		return nil
+	}, nil).WithStage(10).WithName("stage10"))
+
+	lc.Add(NewFuncActor(func(_ context.Context) error {
+		order = append(order, "stage0")
+		return nil
+	}, nil).WithStage(0).WithName("stage0"))
+
+	lc.Add(NewFuncActor(func(_ context.Context) error {
+		order = append(order, "stage5")
+		return nil
+	}, nil).WithStage(5).WithName("stage5"))
+
+	// Add a service that completes immediately to trigger lifecycle completion
+	lc.Add(NewFuncService(func(_ context.Context) error {
+		return nil // complete immediately after all actors started
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	err := lc.Start(ctx)
+	require.NoError(t, err)
+
+	// Wait for lifecycle to complete
+	<-lc.Done()
+
+	require.Equal(t, []string{"stage0", "stage5", "stage10"}, order)
+}

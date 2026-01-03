@@ -271,3 +271,23 @@ func TestFuncService_PanicOnNilTaskFunc(t *testing.T) {
 		lifecycle.NewFuncService(nil)
 	})
 }
+
+func TestFuncActor_Stage(t *testing.T) {
+	t.Run("default stage", func(t *testing.T) {
+		actor := lifecycle.NewFuncActor(nil, nil)
+		require.Equal(t, 0, actor.GetStage())
+	})
+
+	t.Run("with readiness probe defaults to MaxInt", func(t *testing.T) {
+		actor := lifecycle.NewFuncActor(nil, nil).WithReadiness()
+		require.Greater(t, actor.GetStage(), 1000000)
+	})
+
+	t.Run("explicit stage overrides default", func(t *testing.T) {
+		actor := lifecycle.NewFuncActor(nil, nil).WithStage(5)
+		require.Equal(t, 5, actor.GetStage())
+
+		actorWithProbe := lifecycle.NewFuncActor(nil, nil).WithReadiness().WithStage(3)
+		require.Equal(t, 3, actorWithProbe.GetStage())
+	})
+}

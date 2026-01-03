@@ -19,6 +19,8 @@ type FuncActor struct {
 	startFunc      func(ctx context.Context) error
 	stopFunc       func(ctx context.Context) error
 	name           string
+	stage          int
+	stageSet       bool
 	readinessProbe *ReadinessProbe
 }
 
@@ -27,12 +29,18 @@ func NewFuncActor(start, stop func(ctx context.Context) error) *FuncActor {
 	return &FuncActor{
 		startFunc: start,
 		stopFunc:  stop,
+		stage:     StageDefault,
+		stageSet:  false,
 	}
 }
 
 // WithName sets the name of the actor.
+// If a readiness probe is enabled, its name is also updated.
 func (f *FuncActor) WithName(name string) *FuncActor {
 	f.name = name
+	if f.readinessProbe != nil {
+		f.readinessProbe.WithName(name)
+	}
 	return f
 }
 
@@ -69,11 +77,17 @@ func (f *FuncActor) RequiresStop() bool {
 	return f.startFunc == nil && f.stopFunc != nil
 }
 
-// WithReadiness enables readiness probe for this actor.
-// Returns the actor for method chaining.
+// WithReadiness enables a readiness probe for this actor.
+// Note: When enabled, this actor is assigned a very high stage value (for example,
+// close to math.MaxInt) so that it starts after most other actors. This is typically
+// desirable because readiness/health endpoints depend on the rest of the system
+// being up, not the other way around. If another actor must start after this one,
+// give that actor a higher stage (but still lower than the readiness-probe stage)
+// by using WithStage to override its default behavior. Returns the actor for method
+// chaining.
 func (f *FuncActor) WithReadiness() *FuncActor {
 	if f.readinessProbe == nil {
-		f.readinessProbe = NewReadinessProbe()
+		f.readinessProbe = NewReadinessProbe().WithName(f.name)
 	}
 	return f
 }
@@ -81,6 +95,25 @@ func (f *FuncActor) WithReadiness() *FuncActor {
 // RequiresReadinessProbe returns the readiness probe if enabled via WithReadiness.
 func (f *FuncActor) RequiresReadinessProbe() *ReadinessProbe {
 	return f.readinessProbe
+}
+
+// WithStage sets the stage for the actor, overriding the default behavior.
+// This affects the order of actor startup: lower stages start first.
+func (f *FuncActor) WithStage(stage int) *FuncActor {
+	f.stage = stage
+	f.stageSet = true
+	return f
+}
+
+// GetStage returns the stage of the actor.
+func (f *FuncActor) GetStage() int {
+	if f.stageSet {
+		return f.stage
+	}
+	if f.readinessProbe == nil {
+		return StageDefault
+	}
+	return StageReadiness
 }
 
 var _ Service = (*FuncService)(nil)

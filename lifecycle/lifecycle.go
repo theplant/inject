@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -63,6 +64,20 @@ type Named interface {
 // This is useful for actors that acquire resources during construction and need cleanup regardless of whether Start is called.
 type RequiresStop interface {
 	RequiresStop() bool
+}
+
+const (
+	// StageDefault is the default stage for actors without explicit stage.
+	StageDefault = 0
+
+	// StageReadiness is the default stage for actors with readiness probe enabled.
+	// It's very high to ensure readiness-probe actors start last.
+	StageReadiness = math.MaxInt - 1000
+)
+
+// Staged defines an optional interface for actors that can specify their execution stage
+type Staged interface {
+	GetStage() int
 }
 
 // Lifecycle also implements Service and RequiresReadinessProbe interfaces.
@@ -131,6 +146,30 @@ func collectServices(actors []Actor) []Service {
 	return services
 }
 
+// sortActorsByStage sorts actors by their stage value (lower stages first).
+// Actors without Staged interface are treated as stage 0.
+// This is a stable sort, preserving the original order for actors with the same stage.
+func sortActorsByStage(actors []Actor) []Actor {
+	slices.SortStableFunc(actors, func(a, b Actor) int {
+		stageA := StageDefault
+		stageB := StageDefault
+		if staged, ok := a.(Staged); ok {
+			stageA = staged.GetStage()
+		}
+		if staged, ok := b.(Staged); ok {
+			stageB = staged.GetStage()
+		}
+		if stageA < stageB {
+			return -1
+		}
+		if stageA > stageB {
+			return 1
+		}
+		return 0
+	})
+	return actors
+}
+
 // Start builds the context and starts the lifecycle.
 func (lc *Lifecycle) Start(ctx context.Context) (xerr error) {
 	// Signal readiness probe when Start completes
@@ -141,7 +180,8 @@ func (lc *Lifecycle) Start(ctx context.Context) (xerr error) {
 	}
 
 	lc.mu.RLock()
-	actors := slices.Clone(lc.actors)
+	actors := sortActorsByStage(slices.Clone(lc.actors))
+	logger := lc.logger
 	lc.mu.RUnlock()
 
 	// Check for long-running services before starting actors
@@ -177,7 +217,12 @@ func (lc *Lifecycle) Start(ctx context.Context) (xerr error) {
 	}
 
 	// Wait for all probes to signal ready
-	for _, probe := range allProbes {
+	for i, probe := range allProbes {
+		probeName := probe.GetName()
+		if probeName == "" {
+			probeName = fmt.Sprintf("probe[%d]", i)
+		}
+		logger.DebugContext(ctx, "Waiting for readiness probe", "probe", probeName)
 		select {
 		case <-lc.Done():
 			return lc.Err()
@@ -185,8 +230,10 @@ func (lc *Lifecycle) Start(ctx context.Context) (xerr error) {
 			return errors.WithStack(ctx.Err())
 		case <-probe.Done():
 			if err := probe.Error(); err != nil {
+				logger.ErrorContext(ctx, "Readiness probe failed", "probe", probeName, "error", err)
 				return err
 			}
+			logger.DebugContext(ctx, "Readiness probe signaled ready", "probe", probeName)
 		}
 	}
 
@@ -194,8 +241,10 @@ func (lc *Lifecycle) Start(ctx context.Context) (xerr error) {
 }
 
 // WithName sets the name for the lifecycle.
+// Also updates the readiness probe name.
 func (lc *Lifecycle) WithName(name string) *Lifecycle {
 	lc.FuncService.WithName(name)
+	lc.readinessProbe.WithName(name)
 	return lc
 }
 
@@ -264,11 +313,13 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 		return errors.WithStack(ErrServed)
 	}
 
-	startedActors := make(map[int]bool)
+	// Track which actors have been started using actor identity.
+	// This works reliably for pointer types and most value types.
+	startedActors := make(map[Actor]bool)
 
 	defer func() {
 		lc.mu.RLock()
-		actors := slices.Clone(lc.actors)
+		actors := sortActorsByStage(slices.Clone(lc.actors))
 		stopTimeout := lc.stopTimeout
 		stopEachTimeout := lc.stopEachTimeout
 		logger := lc.logger
@@ -285,7 +336,7 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 			if rs, ok := actor.(RequiresStop); ok && rs.RequiresStop() {
 				needsStop = true
 			}
-			if startedActors[i] {
+			if !needsStop && startedActors[actor] {
 				needsStop = true
 			}
 
@@ -313,7 +364,7 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 	}
 
 	lc.mu.RLock()
-	actors := slices.Clone(lc.actors)
+	actors := sortActorsByStage(slices.Clone(lc.actors))
 	logger := lc.logger
 	lc.mu.RUnlock()
 
@@ -333,12 +384,14 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 			actorType = "Service"
 		}
 
+		logger.DebugContext(ctx, fmt.Sprintf("%s starting", actorType), "actor", actorName)
+
 		if err := actor.Start(ctx); err != nil {
 			logger.ErrorContext(ctx, fmt.Sprintf("Failed to start %s", strings.ToLower(actorType)), "actor", actorName, "error", err)
 			return err
 		}
 
-		startedActors[i] = true
+		startedActors[actor] = true
 		logger.DebugContext(ctx, fmt.Sprintf("%s started successfully", actorType), "actor", actorName)
 	}
 
