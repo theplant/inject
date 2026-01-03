@@ -65,6 +65,11 @@ type RequiresStop interface {
 	RequiresStop() bool
 }
 
+// Staged defines an optional interface for actors that can specify their execution stage
+type Staged interface {
+	GetStage() int
+}
+
 // Lifecycle also implements Service and RequiresReadinessProbe interfaces.
 var (
 	_ inject.Resolver        = (*Lifecycle)(nil)
@@ -131,6 +136,24 @@ func collectServices(actors []Actor) []Service {
 	return services
 }
 
+// sortActorsByStage sorts actors by their stage value (lower stages first).
+// Actors without Staged interface are treated as stage 0.
+// This is a stable sort, preserving the original order for actors with the same stage.
+func sortActorsByStage(actors []Actor) []Actor {
+	slices.SortStableFunc(actors, func(a, b Actor) int {
+		stageA := 0
+		stageB := 0
+		if staged, ok := a.(Staged); ok {
+			stageA = staged.GetStage()
+		}
+		if staged, ok := b.(Staged); ok {
+			stageB = staged.GetStage()
+		}
+		return stageA - stageB
+	})
+	return actors
+}
+
 // Start builds the context and starts the lifecycle.
 func (lc *Lifecycle) Start(ctx context.Context) (xerr error) {
 	// Signal readiness probe when Start completes
@@ -141,7 +164,7 @@ func (lc *Lifecycle) Start(ctx context.Context) (xerr error) {
 	}
 
 	lc.mu.RLock()
-	actors := slices.Clone(lc.actors)
+	actors := sortActorsByStage(slices.Clone(lc.actors))
 	logger := lc.logger
 	lc.mu.RUnlock()
 
@@ -274,11 +297,14 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 		return errors.WithStack(ErrServed)
 	}
 
-	startedActors := make(map[int]bool)
+	// Track which actors have been started using pointer address as key.
+	// Using fmt.Sprintf("%p") to handle any Actor implementation safely,
+	// including value types with non-comparable fields.
+	startedActors := make(map[string]bool)
 
 	defer func() {
 		lc.mu.RLock()
-		actors := slices.Clone(lc.actors)
+		actors := sortActorsByStage(slices.Clone(lc.actors))
 		stopTimeout := lc.stopTimeout
 		stopEachTimeout := lc.stopEachTimeout
 		logger := lc.logger
@@ -295,7 +321,7 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 			if rs, ok := actor.(RequiresStop); ok && rs.RequiresStop() {
 				needsStop = true
 			}
-			if startedActors[i] {
+			if !needsStop && startedActors[fmt.Sprintf("%p", actor)] {
 				needsStop = true
 			}
 
@@ -323,7 +349,7 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 	}
 
 	lc.mu.RLock()
-	actors := slices.Clone(lc.actors)
+	actors := sortActorsByStage(slices.Clone(lc.actors))
 	logger := lc.logger
 	lc.mu.RUnlock()
 
@@ -350,7 +376,7 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 			return err
 		}
 
-		startedActors[i] = true
+		startedActors[fmt.Sprintf("%p", actor)] = true
 		logger.DebugContext(ctx, fmt.Sprintf("%s started successfully", actorType), "actor", actorName)
 	}
 
