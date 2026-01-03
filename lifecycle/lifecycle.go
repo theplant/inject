@@ -159,7 +159,13 @@ func sortActorsByStage(actors []Actor) []Actor {
 		if staged, ok := b.(Staged); ok {
 			stageB = staged.GetStage()
 		}
-		return stageA - stageB
+		if stageA < stageB {
+			return -1
+		}
+		if stageA > stageB {
+			return 1
+		}
+		return 0
 	})
 	return actors
 }
