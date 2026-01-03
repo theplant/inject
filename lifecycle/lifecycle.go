@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -64,6 +65,15 @@ type Named interface {
 type RequiresStop interface {
 	RequiresStop() bool
 }
+
+const (
+	// StageDefault is the default stage for actors without explicit stage.
+	StageDefault = 0
+
+	// StageReadiness is the default stage for actors with readiness probe enabled.
+	// It's very high to ensure readiness-probe actors start last.
+	StageReadiness = math.MaxInt - 1000
+)
 
 // Staged defines an optional interface for actors that can specify their execution stage
 type Staged interface {
@@ -141,8 +151,8 @@ func collectServices(actors []Actor) []Service {
 // This is a stable sort, preserving the original order for actors with the same stage.
 func sortActorsByStage(actors []Actor) []Actor {
 	slices.SortStableFunc(actors, func(a, b Actor) int {
-		stageA := 0
-		stageB := 0
+		stageA := StageDefault
+		stageB := StageDefault
 		if staged, ok := a.(Staged); ok {
 			stageA = staged.GetStage()
 		}

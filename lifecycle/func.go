@@ -2,7 +2,6 @@ package lifecycle
 
 import (
 	"context"
-	"math"
 	"sync"
 	"sync/atomic"
 
@@ -21,6 +20,7 @@ type FuncActor struct {
 	stopFunc       func(ctx context.Context) error
 	name           string
 	stage          int
+	stageSet       bool
 	readinessProbe *ReadinessProbe
 }
 
@@ -29,7 +29,8 @@ func NewFuncActor(start, stop func(ctx context.Context) error) *FuncActor {
 	return &FuncActor{
 		startFunc: start,
 		stopFunc:  stop,
-		stage:     math.MinInt,
+		stage:     StageDefault,
+		stageSet:  false,
 	}
 }
 
@@ -93,20 +94,23 @@ func (f *FuncActor) RequiresReadinessProbe() *ReadinessProbe {
 	return f.readinessProbe
 }
 
+// WithStage sets the stage for the actor, overriding the default behavior.
+// This affects the order of actor startup: lower stages start first.
 func (f *FuncActor) WithStage(stage int) *FuncActor {
 	f.stage = stage
+	f.stageSet = true
 	return f
 }
 
 // GetStage returns the stage of the actor.
 func (f *FuncActor) GetStage() int {
-	if f.stage != math.MinInt {
+	if f.stageSet {
 		return f.stage
 	}
 	if f.readinessProbe == nil {
-		return 0
+		return StageDefault
 	}
-	return math.MaxInt
+	return StageReadiness
 }
 
 var _ Service = (*FuncService)(nil)
