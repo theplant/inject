@@ -77,6 +77,9 @@ func (f *FuncActor) RequiresStop() bool {
 }
 
 // WithReadiness enables readiness probe for this actor.
+// Note: When enabled, the actor gets a very high stage value (math.MaxInt) to ensure it starts last.
+// Therefore, components that depend on this actor should have a higher stage value.
+// Use WithStage to override this default behavior.
 // Returns the actor for method chaining.
 func (f *FuncActor) WithReadiness() *FuncActor {
 	if f.readinessProbe == nil {
