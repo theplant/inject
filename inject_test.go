@@ -1184,6 +1184,7 @@ func TestErrorTypePositionValidation(t *testing.T) {
 	{
 		// Test error in middle position (invalid)
 		injector := New()
+		//nolint:staticcheck // intentionally testing invalid error position
 		err := injector.Provide(func() (string, error, int) { return "", nil, 0 })
 		require.ErrorIs(t, err, ErrErrorTypeMustBeLast)
 	}
