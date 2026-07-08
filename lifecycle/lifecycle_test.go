@@ -222,6 +222,51 @@ func TestServeConvenienceFunction(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoServices)
 }
 
+// TestServeCancelDuringActorStartup covers the race where a shutdown request
+// (context cancellation) arrives while an actor is still starting, e.g. a
+// SIGTERM racing a startup I/O call. Startup must treat it as a graceful
+// shutdown — mirroring the run-phase behavior — not as a startup failure.
+func TestServeCancelDuringActorStartup(t *testing.T) {
+	t.Run("cancellation during startup is graceful shutdown", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		err := Serve(ctx,
+			func(lc *Lifecycle) string {
+				lc.Add(NewFuncService(func(ctx context.Context) error {
+					<-ctx.Done()
+					return nil
+				}).WithName("background-service"))
+				lc.Add(NewFuncActor(func(ctx context.Context) error {
+					// Shutdown is requested while this actor is starting.
+					cancel()
+					return ctx.Err()
+				}, nil).WithName("starting-actor"))
+				return "ok"
+			},
+		)
+		require.NoError(t, err)
+	})
+
+	t.Run("real startup failure is still reported", func(t *testing.T) {
+		startErr := errors.New("dial failed")
+
+		err := Serve(context.Background(),
+			func(lc *Lifecycle) string {
+				lc.Add(NewFuncService(func(ctx context.Context) error {
+					<-ctx.Done()
+					return nil
+				}).WithName("background-service"))
+				lc.Add(NewFuncActor(func(_ context.Context) error {
+					return startErr
+				}, nil).WithName("failing-actor"))
+				return "ok"
+			},
+		)
+		require.ErrorIs(t, err, startErr)
+	})
+}
+
 // TestBuilderMethods tests all builder methods for comprehensive coverage
 func TestBuilderMethods(t *testing.T) {
 	lc := New()
