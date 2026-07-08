@@ -308,6 +308,8 @@ var errServiceCompleted = errors.New("service completed")
 // The cleanup is guaranteed to run even if any step fails,
 // using defer to ensure each started actor is properly stopped.
 // The ctx parameter controls the long-running monitoring process and can be used to cancel the entire operation.
+// Cancelling ctx is treated as a graceful shutdown request and Serve returns nil,
+// whether the cancellation arrives during actor startup or while monitoring services.
 func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 	if !lc.served.CompareAndSwap(false, true) {
 		return errors.WithStack(ErrServed)
@@ -387,6 +389,15 @@ func (lc *Lifecycle) Serve(ctx context.Context, ctors ...any) (xerr error) {
 		logger.DebugContext(ctx, fmt.Sprintf("%s starting", actorType), "actor", actorName)
 
 		if err := actor.Start(ctx); err != nil {
+			// A shutdown request racing the startup sequence is a graceful
+			// shutdown, mirroring the run-phase handling of context.Canceled,
+			// not a startup failure. Checked via ctx.Err() rather than the
+			// returned error because the cancellation may be masked by
+			// intermediate layers (e.g. database drivers).
+			if errors.Is(ctx.Err(), context.Canceled) {
+				logger.InfoContext(ctx, fmt.Sprintf("%s startup aborted by shutdown request", actorType), "actor", actorName, "cause", err)
+				return nil
+			}
 			logger.ErrorContext(ctx, fmt.Sprintf("Failed to start %s", strings.ToLower(actorType)), "actor", actorName, "error", err)
 			return err
 		}
